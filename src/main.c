@@ -94,6 +94,7 @@ static void ios_crash_handler(int sig)
 #define SDL_INIT_VIDEO          0x00000020u
 #define SDL_WINDOWPOS_CENTERED  0x2FFF0000u
 #define SDL_WINDOW_VULKAN       0x10000000u
+#define SDL_WINDOW_ALLOW_HIGHDPI 0x00002000u
 #define SDL_WINDOW_RESIZABLE    0x00000020u
 int SDL_InitSubSystem(uint32_t flags);
 void *SDL_CreateWindow(const char *title, int x, int y, int w, int h, uint32_t flags);
@@ -467,7 +468,9 @@ int main(int argc, char **argv)
         SDL_InitSubSystem(SDL_INIT_VIDEO);
         fprintf(stderr, "nfsu2: creating SDL window on main thread\n");
         void *win = SDL_CreateWindow("NFSU2", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                     1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+                                     1280, 720,
+                                     SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
+                                     SDL_WINDOW_ALLOW_HIGHDPI);
         fprintf(stderr, "nfsu2: window=%p (%s)\n", win, win ? "ok" : SDL_GetError());
         nv2a_vk_set_window(win);
         if (!win)

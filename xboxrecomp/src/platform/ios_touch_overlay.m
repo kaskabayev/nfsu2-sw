@@ -14,10 +14,20 @@ typedef struct XBOX_IOS_TOUCH_ZONE_MIRROR {
 } XBOX_IOS_TOUCH_ZONE_MIRROR;
 extern const void *xbox_ios_touch_zones(int *count);
 
-static int zone_label_kind(int kind)
+/* One-letter labels for the buttons; triggers/shoulders get two. */
+static const char *zone_label(int value)
 {
-    /* Buttons get a brighter fill than the stick halves. */
-    return kind;
+    switch (value) {
+    case 0:  return "A";
+    case 1:  return "B";
+    case 2:  return "X";
+    case 3:  return "Y";
+    case 4:  return "LB";
+    case 5:  return "LT";
+    case 6:  return "RB";
+    case 7:  return "RT";
+    default: return NULL;   /* sticks and the bare halves stay unlabeled */
+    }
 }
 
 @interface Nfsu2Overlay : UIView
@@ -61,6 +71,19 @@ static int zone_label_kind(int kind)
         CGContextAddPath(c, p);
         CGContextDrawPath(c, kCGPathFillStroke);
         CGPathRelease(p);
+        /* Button label, centred. */
+        const char *lbl = zone_label(z[i].value);
+        if (lbl) {
+            NSDictionary *attrs = @{
+                NSFontAttributeName: [UIFont systemFontOfSize:H * 0.045f],
+                NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.95]
+            };
+            NSString *str = [NSString stringWithUTF8String:lbl];
+            CGSize sz = [str sizeWithAttributes:attrs];
+            [str drawAtPoint:CGPointMake(z[i].cx * W - sz.width / 2,
+                                         z[i].cy * H - sz.height / 2)
+              withAttributes:attrs];
+        }
     }
     (void)zone_label_kind;
 }

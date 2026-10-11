@@ -74,12 +74,15 @@ static const XBOX_IOS_TOUCH_ZONE s_zones[] = {
     {  1,  0.056f, 0.102f, 0.035f, 0.076f, XBOX_IOS_ZONE_FLAG,   XBOX_GAMEPAD_BACK  },
     {  2,  0.944f, 0.102f, 0.035f, 0.076f, XBOX_IOS_ZONE_FLAG,   XBOX_GAMEPAD_START },
     {  3,  0.112f, 0.789f, 0.065f, 0.140f, XBOX_IOS_ZONE_DPAD,   0                  },
-    {  4,  0.704f, 0.445f, 0.042f, 0.092f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_BLACK  },  /* left shoulder */
-    {  5,  0.939f, 0.445f, 0.042f, 0.092f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_WHITE  },  /* right shoulder */
-    {  6,  0.857f, 0.865f, 0.054f, 0.117f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_A      },
-    {  7,  0.927f, 0.751f, 0.054f, 0.117f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_B      },
-    {  8,  0.786f, 0.751f, 0.054f, 0.117f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_X      },
-    {  9,  0.857f, 0.598f, 0.054f, 0.117f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_Y      },
+    {  4,  0.130f, 0.560f, 0.046f, 0.100f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_BLACK  },  /* LB */
+    {  5,  0.130f, 0.780f, 0.046f, 0.100f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_LTRIGGER }, /* LT */
+    {  6,  0.944f, 0.445f, 0.046f, 0.100f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_WHITE  },  /* RB */
+    {  7,  0.944f, 0.660f, 0.046f, 0.100f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_RTRIGGER }, /* RT */
+    /* ABXY diamond: centres 0.055 apart, radius 0.040 -- no overlap. */
+    {  8,  0.840f, 0.860f, 0.040f, 0.087f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_A      },
+    {  9,  0.905f, 0.770f, 0.040f, 0.087f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_B      },
+    { 10,  0.775f, 0.770f, 0.040f, 0.087f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_X      },
+    { 11,  0.840f, 0.680f, 0.040f, 0.087f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_Y      },
 };
 #define ZONE_COUNT (sizeof s_zones / sizeof s_zones[0])
 
