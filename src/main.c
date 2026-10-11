@@ -379,7 +379,6 @@ static int game_main(void)
     signal(SIGBUS, ios_crash_handler);
     signal(SIGILL, ios_crash_handler);
     signal(SIGABRT, ios_crash_handler);
-#endif
     fprintf(stderr, "nfsu2: build v5 (VKINIT markers + crash handler)\n");
     fprintf(stderr, "nfsu2: HOME=%s CFFIXED_USER_HOME=%s TMPDIR=%s\n",
             getenv("HOME") ? getenv("HOME") : "(unset)",
