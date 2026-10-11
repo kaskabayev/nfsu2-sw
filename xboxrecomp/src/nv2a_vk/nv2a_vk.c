@@ -1648,6 +1648,8 @@ static void pipe_rec_append(const PipeKey *k)
     FILE *f;
     if (s_prewarming || !cache_path(path, sizeof path, "vkpipes.bin"))
         return;
+    if (!s_dyn_vertex_input)
+        return;   /* fallback keys embed a layout hash no reader can rebuild */
     memset(&rec, 0, sizeof rec);
     rec.magic = PIPE_REC_MAGIC;
     rec.vkey = s_prog[k->prog].vkey;
@@ -1878,6 +1880,16 @@ static void prewarm(void)
                 nprog++;
         }
         fclose(f);
+    }
+    /* Fallback mode: cached records were written under the dynamic-state
+     * assumption (vlayout=0) and the 32-bit layout hash can't be rebuilt
+     * from a record alone. Skip both reading and writing. */
+    if (!s_dyn_vertex_input) {
+        s_prewarming = 0;
+        fprintf(stderr, "  [VK] prewarm: pipelines skipped (per-layout fallback mode)\n");
+        if (s_pipes_unsaved)
+            pcache_save();
+        return;
     }
     if (cache_path(path, sizeof path, "vkpipes.bin") && (f = fopen(path, "rb"))) {
         while (fread(&pr, sizeof pr, 1, f) == 1) {
@@ -2164,10 +2176,16 @@ static int ready_impl(void)
     qci.queueCount = 1;
     qci.pQueuePriorities = &prio;
     f13.dynamicRendering = VK_TRUE;
-    if (s_dyn_vertex_input)
-        fvi.vertexInputDynamicState = VK_TRUE;
     feds.extendedDynamicState = VK_TRUE;
-    f13.pNext = &fvi;
+    if (s_dyn_vertex_input) {
+        /* Only chain the feature when the extension is actually enabled;
+         * a pNext for a missing ext is invalid. (Set up here, after the
+         * extension detection above read the device's real list.) */
+        memset(&fvi, 0, sizeof fvi);
+        fvi.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT;
+        fvi.vertexInputDynamicState = VK_TRUE;
+        f13.pNext = &fvi;
+    }
     f2.pNext = &f13;
     f2.features.textureCompressionBC = s_have_bc ? VK_TRUE : VK_FALSE;
     f2.features.depthClamp = s_have_depth_clamp ? VK_TRUE : VK_FALSE;
@@ -2205,14 +2223,11 @@ static int ready_impl(void)
         return 0;
     }
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
-#define GET(p, name) p = (void *)vkGetDeviceProcAddr(s_dev, name); if (!p) { LOGE("missing %s\n", name); return 0; }
+#define GET(p, name) do { (p) = (void *)vkGetDeviceProcAddr(s_dev, (name)); \
+    if (!(p)) { LOGE("missing %s\n", (name)); return 0; } } while (0)
     GET(p_push_desc, "vkCmdPushDescriptorSetKHR");
-    /* Soft-GET: the per-layout fallback never calls this, so a NULL here is
-     * fine when the extension is absent (MoltenVK). Whatever happened on the
-     * device, a hard failure at this symbol must not go headless. */
-    p_vertex_input = (void *)vkGetDeviceProcAddr(s_dev, "vkCmdSetVertexInputEXT");
-    if (!p_vertex_input)
-        LOGE("vkCmdSetVertexInputEXT absent - per-layout pipelines in use\n");
+    if (s_dyn_vertex_input)
+        GET(p_vertex_input, "vkCmdSetVertexInputEXT");
     GET(p_begin_rendering, "vkCmdBeginRendering");
     GET(p_end_rendering, "vkCmdEndRendering");
     GET(p_cull_mode, "vkCmdSetCullMode");
@@ -2773,6 +2788,21 @@ static int upload_vertices(const Nv2aRawBatch *b)
     }
     if (s_dyn_vertex_input)
         p_vertex_input(s_cb, NV2A_RAW_ATTRS, bind, NV2A_RAW_ATTRS, attr);
+#ifdef NFSU2_IOS
+    /* Metal wants 4-byte-aligned offsets/strides; the title's packed short
+     * formats can produce odd ones. Log the first offense to confirm. */
+    {
+        static int align_warned;
+        if (!align_warned)
+            for (a = 0; a < NV2A_RAW_ATTRS; a++)
+                if ((offs[a] & 3) || (bind[a].stride & 3)) {
+                    fprintf(stderr, "[VK] MISALIGNED vertex data: attr %u off %llu stride %u\n",
+                            a, (unsigned long long)offs[a], bind[a].stride);
+                    align_warned = 1;
+                    break;
+                }
+    }
+#endif
     vkCmdBindVertexBuffers(s_cb, 0, NV2A_RAW_ATTRS, bufs, offs);
     return 1;
 }
@@ -3070,8 +3100,9 @@ static void vk_draw_raw(const Nv2aRawBatch *b)
     }
     key.depth = d != NULL;
     key.topo = cls;
-    if (!s_dyn_vertex_input)
-        pipe_vertex_layout(b);   /* fill s_vl_* + hash before the key is hashed */
+    /* ALWAYS: upload_vertices() reuses s_vl_* on both paths, and the dynamic
+     * path needs real descriptions too (they were zero before this fix). */
+    pipe_vertex_layout(b);
     key.vlayout = s_dyn_vertex_input ? 0 : s_vlayout_hash;
     pipe = pipe_get(&key);
     if (!pipe)
