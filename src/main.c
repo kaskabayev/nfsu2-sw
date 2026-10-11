@@ -99,6 +99,24 @@ int SDL_InitSubSystem(uint32_t flags);
 void *SDL_CreateWindow(const char *title, int x, int y, int w, int h, uint32_t flags);
 const char *SDL_GetError(void);
 int SDL_WaitEvent(void *event);
+void SDL_SetHint(const char *name, const char *value);
+int SDL_PollEvent(void *event);
+/* SDL_syswm.h subset: SDL_GetWindowWMInfo(SDL_Window*, SDL_SysWMinfo*).
+ * The UIKit variant carries the UIWindow at info.info.uikit.window. */
+struct sdl_syswm_uikit { void *window; };
+struct sdl_syswm_info {
+    uint32_t version_major, version_minor, version_patch;
+    uint32_t subsystem;
+    union { struct sdl_syswm_uikit uikit; } info;
+};
+int SDL_GetWindowWMInfo(void *window, struct sdl_syswm_info *info);
+/* SDL_hints.h / SDL_video.h / SDL_syswm.h values */
+#define SDL_HINT_ORIENTATIONS "SDL_IOS_ORIENTATIONS"
+#define SDL_WINDOWEVENT 0x200
+#define SDL_QUIT 0x100
+#define SDL_SYSWM_UIKIT 4
+/* SDL_WindowEvent: type, timestamp, windowID, event, padding, data1, data2 */
+struct sdl_winev { uint32_t type, ts; uint32_t win; uint8_t ev; int pad; int d1, d2; };
 #endif
 
 #if defined(__SWITCH__)
