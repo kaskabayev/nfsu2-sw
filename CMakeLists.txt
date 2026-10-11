@@ -165,3 +165,25 @@ if(NINTENDO_SWITCH)
         nx_create_nro(${PROJECT_NAME} NACP "${NFSU2_NACP}")
     endif()
 endif()
+
+# ── iOS app (arm64, MoltenVK + SDL2 static) ─────────────────────
+#
+# Built from the private artifact repo's ios-app workflow (kaskabayev/nfsu2-gen):
+#   cmake -S . -B build -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 \
+#     -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+#     -DNFSU2_GEN_DIR=<lifted C> -DNFSU2_VULKAN=ON \
+#     -DCMAKE_PREFIX_PATH=<SDL2+glslang install> -DMOLTENVK_FRAMEWORK=<MoltenVK.framework>
+# The workflow packages the binary into NFSU2.app / an unsigned IPA.
+if(IOS AND NOT NINTENDO_SWITCH)
+    find_package(SDL2 REQUIRED)
+    # SDL2 static on iOS: the library owns UIApplicationMain; our main() is
+    # renamed through SDL_main.h (forced into every translation unit).
+    target_include_directories(${PROJECT_NAME} PRIVATE
+        $<TARGET_PROPERTY:SDL2::SDL2,INTERFACE_INCLUDE_DIRECTORIES>)
+    target_compile_options(${PROJECT_NAME} PRIVATE -include SDL_main.h)
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        SDL2::SDL2 "-framework UIKit" "-framework Metal" "-framework GameController"
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreMotion"
+        "-framework CoreHaptics" "-framework Foundation" "-framework QuartzCore"
+        "-framework CoreGraphics" "-framework OpenGLES" "-framework CoreVideo")
+endif()
