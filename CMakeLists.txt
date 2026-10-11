@@ -184,6 +184,7 @@ if(IOS AND NOT NINTENDO_SWITCH)
     if(TARGET SDL2::SDL2main)
         target_link_libraries(${PROJECT_NAME} PRIVATE SDL2::SDL2main)
     endif()
+    # No -u _main here: SDL2main defines main(); the -u flag made ld64 die.
     target_link_libraries(${PROJECT_NAME} PRIVATE
         SDL2::SDL2 "-framework UIKit" "-framework Metal" "-framework GameController"
         "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreMotion"
