@@ -183,8 +183,12 @@ if(IOS AND NOT NINTENDO_SWITCH)
     target_compile_options(${PROJECT_NAME} PRIVATE -include SDL_main.h)
     if(TARGET SDL2::SDL2main)
         target_link_libraries(${PROJECT_NAME} PRIVATE SDL2::SDL2main)
+    else()
+        # Static-only install ships no SDL2main: the UIKit main() lives inside
+        # libSDL2.a. Nothing references it until it loads, so pin the symbol:
+        # -u _SDL_main pulls the archive member that defines main().
+        target_link_options(${PROJECT_NAME} PRIVATE -Wl,-u,_SDL_main)
     endif()
-    # No -u _main here: SDL2main defines main(); the -u flag made ld64 die.
     target_link_libraries(${PROJECT_NAME} PRIVATE
         SDL2::SDL2 "-framework UIKit" "-framework Metal" "-framework GameController"
         "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreMotion"
