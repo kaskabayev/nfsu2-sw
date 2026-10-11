@@ -123,6 +123,10 @@ static const char *NSTemporaryDirectory_path(const char *sub);
 static void ios_log_to_documents(void)
 {
     static char log_path[1100];
+    static int done;
+    if (done)
+        return;
+    done = 1;
     snprintf(log_path, sizeof log_path, "%s/nfsu2_log.txt",
              NSTemporaryDirectory_path("Documents"));
     if (!freopen(log_path, "w", stderr))
@@ -358,6 +362,13 @@ int main(int argc, char **argv)
 
     (void)argc;
     (void)argv;
+    /* Redirect the log FIRST so main-thread init output is captured. */
+    ios_log_to_documents();
+    setvbuf(stderr, NULL, _IONBF, 0);
+    fprintf(stderr, "nfsu2: build v8 (log capture from main + renderer diag)\n");
+    fprintf(stderr, "nfsu2: HOME=%s TMPDIR=%s\n",
+            getenv("CFFIXED_USER_HOME") ? getenv("CFFIXED_USER_HOME") : "(unset)",
+            getenv("TMPDIR") ? getenv("TMPDIR") : "(unset)");
     switch_boot();
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 16u * 1024 * 1024);
@@ -381,6 +392,22 @@ static void *ios_game_thread(void *arg)
     return NULL;
 }
 
+/* Detached: reports the renderer state for 60s without blocking the main
+ * run loop. If the screen stays black with no crash, these lines name the
+ * guilty stage from the log alone. */
+static void *ios_diag_thread(void *arg)
+{
+    extern int nv2a_vk_diag(void);
+    int i;
+    (void)arg;
+    for (i = 0; i < 12; i++) {
+        sleep(5);
+        fprintf(stderr, "[DIAG] t=%ds renderer=0x%x (1 tried 2 ok 4 headless 8 dyn-vi)\n",
+                (i + 1) * 5, nv2a_vk_diag());
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv)
 {
     pthread_attr_t attr;
@@ -389,6 +416,13 @@ int main(int argc, char **argv)
 
     (void)argc;
     (void)argv;
+    /* Redirect the log FIRST so main-thread init output is captured. */
+    ios_log_to_documents();
+    setvbuf(stderr, NULL, _IONBF, 0);
+    fprintf(stderr, "nfsu2: build v8 (log capture from main + renderer diag)\n");
+    fprintf(stderr, "nfsu2: HOME=%s TMPDIR=%s\n",
+            getenv("CFFIXED_USER_HOME") ? getenv("CFFIXED_USER_HOME") : "(unset)",
+            getenv("TMPDIR") ? getenv("TMPDIR") : "(unset)");
     {
         /* SA_ONSTACK: a guest-thread stack overflow must still reach the
          * handler (plain signal() would die on the overflowed stack). */
@@ -427,6 +461,9 @@ int main(int argc, char **argv)
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 16u * 1024 * 1024);
     if (pthread_create(&th, &attr, ios_game_thread, &rc) == 0) {
+        pthread_t dth;
+        pthread_create(&dth, NULL, ios_diag_thread, NULL);
+        pthread_detach(dth);
         /* SDL_Event is opaque here (main.c avoids SDL.h): 64 bytes is its
          * sizeof on every SDL2 target. */
         char ev[64] __attribute__((aligned(16)));
@@ -454,7 +491,7 @@ static int game_main(void)
 #ifdef NFSU2_IOS
     ios_log_to_documents();
     setvbuf(stderr, NULL, _IONBF, 0);
-    fprintf(stderr, "nfsu2: build v7 (per-layout pipelines + main runloop thread)\n");
+    fprintf(stderr, "nfsu2: build v8 (log capture from main + renderer diag)\n");
     fprintf(stderr, "nfsu2: HOME=%s CFFIXED_USER_HOME=%s TMPDIR=%s\n",
             getenv("HOME") ? getenv("HOME") : "(unset)",
             getenv("CFFIXED_USER_HOME") ? getenv("CFFIXED_USER_HOME") : "(unset)",

@@ -1547,6 +1547,13 @@ static VkProg *prog_get(const Nv2aRawBatch *b, const Nv2aPshKey *pk)
 }
 
 static int s_dyn_vertex_input;
+
+/* iOS diag: 0x1 init-tried, 0x2 init-ok, 0x4 headless, 0x8 dyn-vi present. */
+int nv2a_vk_diag(void)
+{
+    return (s_state != 0 ? 1 : 0) | (s_state > 0 ? 2 : 0)
+         | (s_headless ? 4 : 0) | (s_dyn_vertex_input ? 8 : 0);
+}
 /* Fallback when VK_EXT_vertex_input_dynamic_state is missing (MoltenVK):
  * the draw's vertex layout is hashed into the pipeline key, and new
  * pipelines carry the descriptions statically. */
