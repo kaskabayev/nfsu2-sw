@@ -3,7 +3,16 @@
  * from the same table the touch layer hit-tests (xinput_ios.h). The view
  * does not take touches; SDL underneath keeps owning them. */
 #import <UIKit/UIKit.h>
-#include "xinput_ios.h"
+/* Mirror the XBOX_IOS_TOUCH_ZONE layout (xinput_ios.h) instead of including
+ * it: that header pulls the Win32 vocabulary, and its `typedef int BOOL`
+ * collides with ObjC's own BOOL. int/float pairs keep identical layout in
+ * both worlds, so a parallel declaration is safe. */
+typedef struct XBOX_IOS_TOUCH_ZONE_MIRROR {
+    int   id;
+    float cx, cy, rx, ry;
+    int   kind, value;
+} XBOX_IOS_TOUCH_ZONE_MIRROR;
+extern const void *xbox_ios_touch_zones(int *count);
 
 static int zone_label_kind(int kind)
 {
@@ -30,7 +39,8 @@ static int zone_label_kind(int kind)
     (void)rect;
     CGContextRef c = UIGraphicsGetCurrentContext();
     int n = 0;
-    const XBOX_IOS_TOUCH_ZONE *z = xbox_ios_touch_zones(&n);
+    const XBOX_IOS_TOUCH_ZONE_MIRROR *z =
+        (const XBOX_IOS_TOUCH_ZONE_MIRROR *)xbox_ios_touch_zones(&n);
     if (!c || !z || n <= 0)
         return;
     CGFloat W = self.bounds.size.width, H = self.bounds.size.height;
