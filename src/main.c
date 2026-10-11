@@ -360,7 +360,11 @@ static int game_main(void)
     size_t xbe_size = 0;
 #ifdef NFSU2_IOS
     ios_log_to_documents();
-    fprintf(stderr, "nfsu2: booting, game dir will resolve below\n");
+    fprintf(stderr, "nfsu2: build v4 (Documents probe)\n");
+    fprintf(stderr, "nfsu2: HOME=%s CFFIXED_USER_HOME=%s TMPDIR=%s\n",
+            getenv("HOME") ? getenv("HOME") : "(unset)",
+            getenv("CFFIXED_USER_HOME") ? getenv("CFFIXED_USER_HOME") : "(unset)",
+            getenv("TMPDIR") ? getenv("TMPDIR") : "(unset)");
 #endif
 
     setvbuf(stdout, NULL, _IONBF, 0);
