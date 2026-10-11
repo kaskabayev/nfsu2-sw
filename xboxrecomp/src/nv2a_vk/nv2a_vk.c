@@ -2207,8 +2207,12 @@ static int ready_impl(void)
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
 #define GET(p, name) p = (void *)vkGetDeviceProcAddr(s_dev, name); if (!p) { LOGE("missing %s\n", name); return 0; }
     GET(p_push_desc, "vkCmdPushDescriptorSetKHR");
-    if (s_dyn_vertex_input)
-        GET(p_vertex_input, "vkCmdSetVertexInputEXT");
+    /* Soft-GET: the per-layout fallback never calls this, so a NULL here is
+     * fine when the extension is absent (MoltenVK). Whatever happened on the
+     * device, a hard failure at this symbol must not go headless. */
+    p_vertex_input = (void *)vkGetDeviceProcAddr(s_dev, "vkCmdSetVertexInputEXT");
+    if (!p_vertex_input)
+        LOGE("vkCmdSetVertexInputEXT absent - per-layout pipelines in use\n");
     GET(p_begin_rendering, "vkCmdBeginRendering");
     GET(p_end_rendering, "vkCmdEndRendering");
     GET(p_cull_mode, "vkCmdSetCullMode");
