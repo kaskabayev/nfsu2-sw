@@ -32,6 +32,17 @@ void switch_boot(void);
 void switch_shutdown(void);
 void switch_error_dialog(const char *msg, const char *details);
 #elif !defined(_WIN32)
+#ifdef NFSU2_IOS
+/* SDL constants (values from SDL_video.h) — main.c avoids including SDL.h */
+#define SDL_INIT_VIDEO          0x00000020u
+#define SDL_WINDOWPOS_CENTERED  0x2FFF0000u
+#define SDL_WINDOW_VULKAN       0x10000000u
+#define SDL_WINDOW_RESIZABLE    0x00000020u
+int SDL_InitSubSystem(uint32_t flags);
+void *SDL_CreateWindow(const char *title, int x, int y, int w, int h, uint32_t flags);
+const char *SDL_GetError(void);
+#endif
+
 int SDL_ShowSimpleMessageBox(uint32_t flags, const char *title, const char *message,
                              void *window);
 #endif
@@ -379,7 +390,16 @@ static int game_main(void)
     signal(SIGBUS, ios_crash_handler);
     signal(SIGILL, ios_crash_handler);
     signal(SIGABRT, ios_crash_handler);
-    fprintf(stderr, "nfsu2: build v5 (VKINIT markers + crash handler)\n");
+    fprintf(stderr, "nfsu2: build v6 (main-thread window + renderer hook)\n");
+    {
+        extern void nv2a_vk_set_window(void *win);
+        SDL_InitSubSystem(SDL_INIT_VIDEO);
+        fprintf(stderr, "nfsu2: creating SDL window on main thread\n");
+        void *win = SDL_CreateWindow("NFSU2", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                     1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+        fprintf(stderr, "nfsu2: window=%p (%s)\n", win, win ? "ok" : SDL_GetError());
+        nv2a_vk_set_window(win);
+    }
     fprintf(stderr, "nfsu2: HOME=%s CFFIXED_USER_HOME=%s TMPDIR=%s\n",
             getenv("HOME") ? getenv("HOME") : "(unset)",
             getenv("CFFIXED_USER_HOME") ? getenv("CFFIXED_USER_HOME") : "(unset)",

@@ -120,6 +120,16 @@ static VkImage        s_sc_images[8];
 static int            s_headless;
 #if !defined(__SWITCH__)
 static SDL_Window    *s_win;
+
+/* iOS: UIKit windows must be created on the app main thread. The renderer's
+ * lazy init runs on the emulation thread, so main.c creates the window early
+ * and hands it over; ready() then skips its own window creation. */
+void nv2a_vk_set_window(void *win)
+{
+    s_win = (SDL_Window *)win;
+    if (s_win)
+        s_headless = 0;
+}
 #endif
 
 static uint32_t mem_type(uint32_t bits, VkMemoryPropertyFlags want)
@@ -1939,13 +1949,30 @@ static int ready(void)
         const char *e = getenv("RECOMP_VK_HEADLESS");
         const char *drv = getenv("SDL_VIDEODRIVER");
         s_headless = (e && *e == '1') || (drv && !strcmp(drv, "offscreen"));
-        if (!s_headless) {
+        if (!s_headless && s_win) {
+            /* Window injected from the main thread (iOS): only pull the
+             * instance extensions it needs. */
+            unsigned int ne = 0;
+            const char *names[8];
+            SDL_Vulkan_GetInstanceExtensions(s_win, &ne, NULL);
+            if (ne > 6) ne = 6;
+            SDL_Vulkan_GetInstanceExtensions(s_win, &ne, names);
+            niext = 0;
+            for (i = 0; i < ne; i++)
+                iext[niext++] = names[i];
+            fprintf(stderr, "[VKINIT] window injected, %u exts\n", ne);
+            fflush(stderr);
+        } else if (!s_headless) {
+            fprintf(stderr, "[VKINIT] SDL video init\n"); fflush(stderr);
             if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
+                fprintf(stderr, "[VKINIT] SDL_InitSubSystem failed: %s\n", SDL_GetError()); fflush(stderr);
                 s_headless = 1;
             } else {
+                fprintf(stderr, "[VKINIT] creating window\n"); fflush(stderr);
                 s_win = SDL_CreateWindow("NV2A (Vulkan)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                          1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
                 if (!s_win) {
+                    fprintf(stderr, "[VKINIT] SDL_CreateWindow failed: %s\n", SDL_GetError()); fflush(stderr);
                     s_headless = 1;
                 } else {
                     unsigned int ne = 0;
