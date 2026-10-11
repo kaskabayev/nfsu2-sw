@@ -181,6 +181,9 @@ if(IOS AND NOT NINTENDO_SWITCH)
     target_include_directories(${PROJECT_NAME} PRIVATE
         $<TARGET_PROPERTY:SDL2::SDL2,INTERFACE_INCLUDE_DIRECTORIES>)
     target_compile_options(${PROJECT_NAME} PRIVATE -include SDL_main.h)
+    # libSDL2.a owns main() (UIKit event pump); -u pulls that member from the
+    # static archive even though nothing else references main before it loads.
+    target_link_options(${PROJECT_NAME} PRIVATE -Wl,-u,_main)
     target_link_libraries(${PROJECT_NAME} PRIVATE
         SDL2::SDL2 "-framework UIKit" "-framework Metal" "-framework GameController"
         "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreMotion"
