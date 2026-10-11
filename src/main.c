@@ -71,7 +71,11 @@ extern void xbox_path_init(const char *game_dir, const char *save_dir);
 
 /* iOS detection, once: the iphoneos SDK predefines __IPHONE_OS_VERSION_MIN_REQUIRED__.
  * (TargetConditionals' TARGET_OS_IPHONE only exists after its header.) */
-#if defined(__APPLE__) && defined(__IPHONE_OS_VERSION_MIN_REQUIRED__)
+/* clang's Darwin driver predefines __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__
+ * for -target arm64-apple-ios (the plain __IPHONE_OS_VERSION_MIN_REQUIRED__
+ * spelling only exists after TargetConditionals.h). Accept both spellings. */
+#if defined(__APPLE__) && (defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__) || \
+                           defined(__IPHONE_OS_VERSION_MIN_REQUIRED__))
 #  define NFSU2_IOS 1
 #endif
 
