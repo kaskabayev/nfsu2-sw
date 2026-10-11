@@ -69,11 +69,16 @@ extern void xbox_path_init(const char *game_dir, const char *save_dir);
 #define NFSU2_ENTRY_POINT 0x0021B1CEu
 
 
+/* iOS detection, once: the iphoneos SDK predefines __IPHONE_OS_VERSION_MIN_REQUIRED__.
+ * (TargetConditionals' TARGET_OS_IPHONE only exists after its header.) */
+#if defined(__APPLE__) && defined(__IPHONE_OS_VERSION_MIN_REQUIRED__)
+#  define NFSU2_IOS 1
+#endif
+
 #if defined(__SWITCH__)
 #  define NFSU2_DEFAULT_GAME_DIR "sdmc:/switch/nfsu2x/game"
 #  define NFSU2_DEFAULT_SAVE_DIR "sdmc:/switch/nfsu2x/save"
-#elif defined(__APPLE__) && (defined(__IPHONE_OS_VERSION_MIN_REQUIRED__) || \
-                             (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE))
+#elif defined(NFSU2_IOS)
 /* iOS sandbox: the app bundle is read-only; the game data goes in the app's
  * Documents folder (Files app → On My iPhone → NFSU2, or pushed by
  * SideStore/Filza). NFSU2_GAME_DIR still wins if set. */
@@ -84,7 +89,7 @@ extern void xbox_path_init(const char *game_dir, const char *save_dir);
 #  define NFSU2_DEFAULT_SAVE_DIR NULL
 #endif
 
-#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED__
+#if defined(NFSU2_IOS)
 /* Forward declaration: the default-dir macros expand to this call. */
 static const char *NSTemporaryDirectory_path(const char *sub);
 /* stderr has no console on iOS: mirror it to Documents/nfsu2_log.txt so the
@@ -352,7 +357,7 @@ static int game_main(void)
     const char *game_dir;
     void *xbe_data;
     size_t xbe_size = 0;
-#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED__
+#ifdef NFSU2_IOS
     ios_log_to_documents();
 #endif
 
@@ -478,7 +483,7 @@ static int game_main(void)
 
     xbox_kernel_init();
     nfsu2_text_patch_init();
-#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED__
+#ifdef NFSU2_IOS
     xbox_path_init(game_dir, ios_save_dir());
 #else
     xbox_path_init(game_dir, NFSU2_DEFAULT_SAVE_DIR);
