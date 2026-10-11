@@ -263,6 +263,7 @@ DWORD xbox_InputGetCapabilities(DWORD dwPort, DWORD dwFlags, XBOX_INPUT_CAPABILI
 #include <SDL.h>
 
 static SDL_GameController *g_pads[XBOX_MAX_CONTROLLERS];
+static SDL_JoystickID      g_pad_inst[XBOX_MAX_CONTROLLERS];
 static BOOL  g_controller_connected[XBOX_MAX_CONTROLLERS];
 static DWORD g_packet[XBOX_MAX_CONTROLLERS];
 
@@ -295,8 +296,11 @@ static void open_controllers(void)
 
 void xbox_InputInit(void)
 {
+    int slot;
     if (!SDL_WasInit(SDL_INIT_GAMECONTROLLER))
         SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
+    for (slot = 0; slot < XBOX_MAX_CONTROLLERS; slot++)
+        g_pad_inst[slot] = -1;
     open_controllers();
 }
 

@@ -1904,7 +1904,22 @@ static int create_swapchain(void)
     return 1;
 }
 
+static int ready_impl(void);
+
+/* Eager init on the app main thread (iOS): surface+swapchain need UIKit. */
+int nv2a_vk_init_on_main(void)
+{
+    if (s_state > 0) return 1;
+    fprintf(stderr, "[VKINIT] eager init on main thread\n"); fflush(stderr);
+    return ready_impl();
+}
+
 static int ready(void)
+{
+    return ready_impl();
+}
+
+static int ready_impl(void)
 {
     VkApplicationInfo ai = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
     VkInstanceCreateInfo ici = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };

@@ -120,7 +120,7 @@ typedef struct {
 
 static SDL_mutex  *s_lock;
 static TouchFinger s_finger[TOUCH_MAX_FINGERS];
-static float       s_aspect = 16.0f / 9.0f;   /* window height / width */
+static float       s_aspect = 9.0f / 16.0f;   /* window height / width (landscape) */
 static DWORD       s_packet;
 static int         s_live;                    /* the watch is installed */
 static int         s_disabled = -1;           /* RECOMP_TOUCH, read once */
@@ -159,7 +159,11 @@ static void stick_deflection(const TouchFinger *f, float aspect,
     }
     if (m <= TOUCH_DEADZONE)
         return;
-    k = ((m - TOUCH_DEADZONE) / (1.0f - TOUCH_DEADZONE)) / m;
+    /* Rescale deadzone→full travel onto the FULL Xbox axis range: at m=1 the
+     * deflection magnitude must be 1.0 (dx has magnitude TOUCH_STICK_RADIUS
+     * there), hence the extra 1/TOUCH_STICK_RADIUS. */
+    k = ((m - TOUCH_DEADZONE) / (1.0f - TOUCH_DEADZONE)) / m
+        / TOUCH_STICK_RADIUS;
     *ox = dx * k;
     *oy = -dy * k;
 }

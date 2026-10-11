@@ -398,6 +398,15 @@ static int game_main(void)
                                      1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
         fprintf(stderr, "nfsu2: window=%p (%s)\n", win, win ? "ok" : SDL_GetError());
         nv2a_vk_set_window(win);
+        if (!win) {
+            fprintf(stderr, "nfsu2: FATAL no window; refusing off-main fallback\n");
+        }
+        if (win) {
+            extern int nv2a_vk_init_on_main(void);
+            fprintf(stderr, "nfsu2: eager renderer init on main thread\n");
+            int ok = nv2a_vk_init_on_main();
+            fprintf(stderr, "nfsu2: eager init %s\n", ok ? "ok" : "FAILED (headless)");
+        }
     }
     fprintf(stderr, "nfsu2: HOME=%s CFFIXED_USER_HOME=%s TMPDIR=%s\n",
             getenv("HOME") ? getenv("HOME") : "(unset)",
