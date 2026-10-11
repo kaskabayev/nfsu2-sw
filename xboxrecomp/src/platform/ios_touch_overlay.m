@@ -29,8 +29,9 @@ static int zone_label_kind(int kind)
     if (self) {
         self.backgroundColor = [UIColor clearColor];
         self.userInteractionEnabled = NO;
-        self.alpha = 0.30f;
+        self.alpha = 0.55f;
         self.opaque = NO;
+        self.contentMode = UIViewContentModeRedraw;
     }
     return self;
 }
@@ -45,14 +46,14 @@ static int zone_label_kind(int kind)
         return;
     CGFloat W = self.bounds.size.width, H = self.bounds.size.height;
     for (int i = 0; i < n; i++) {
-        /* Skip the bare-half stick zones: two huge ellipses would obscure
-         * everything. Small ones (kind>=1) are the labeled controls. */
-        if (z[i].rx * z[i].ry > 0.06f)
-            continue;
-        CGRect r = CGRectMake((z[i].cx - z[i].rx) * W,
-                              (z[i].cy - z[i].ry) * H,
-                              z[i].rx * 2 * W,
-                              z[i].ry * 2 * H);
+        /* Label the stick halves with a small ring at their rest centre
+         * instead of a huge ellipse that would obscure the game. */
+        float rr = z[i].rx * z[i].ry > 0.06f ? 0.045f : z[i].rx;
+        float ry2 = z[i].rx * z[i].ry > 0.06f ? 0.045f * (z[i].ry / z[i].rx) : z[i].ry;
+        CGRect r = CGRectMake((z[i].cx - rr) * W,
+                              (z[i].cy - ry2) * H,
+                              rr * 2 * W,
+                              ry2 * 2 * H);
         CGContextSetRGBFillColor(c, 1, 1, 1, 0.12);
         CGContextSetRGBStrokeColor(c, 1, 1, 1, 0.85);
         CGContextSetLineWidth(c, 1.5);

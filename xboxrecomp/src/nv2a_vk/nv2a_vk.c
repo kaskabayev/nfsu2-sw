@@ -1551,8 +1551,10 @@ static int s_dyn_vertex_input;
 /* iOS: set by main.c when the app is backgrounded/hidden; vk_flip skips
  * acquire/present while it holds (Metal blocks present in background). */
 static int s_ios_bg;
+static int s_sc_dirty;
 void nv2a_vk_set_background(int bg) { s_ios_bg = bg; }
 int nfsu2_ios_background(void) { return s_ios_bg; }
+void nv2a_vk_mark_swapchain_dirty(void) { s_sc_dirty = 1; }
 
 /* iOS diag: 0x1 init-tried, 0x2 init-ok, 0x4 headless, 0x8 dyn-vi present. */
 int nv2a_vk_diag(void)
@@ -2500,7 +2502,31 @@ static int prim_indices(const Nv2aRawBatch *b, const uint32_t **idx, uint32_t *n
     case 4: *topo = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP; *cls = 1; return 1;
     case 5: *topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; *cls = 2; return 1;
     case 6: case 9: *topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; *cls = 2; return 1;
-    case 7: case 10: *topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN; *cls = 2; return 1;
+    case 7: case 10: {                           /* FAN -> list (MoltenVK has
+                                                  * no fans: it maps the fan
+                                                  * to a list, so a 4-vertex
+                                                  * fan renders ONE triangle
+                                                  * - the diagonal wedge) */
+        uint32_t cnt = b->index_count;
+        if (cnt >= 3) {
+            size_t need = (size_t)(cnt - 2) * 3;
+            if (need > s_prim_cap) {
+                free(s_prim_idx);
+                s_prim_cap = need + 1024;
+                s_prim_idx = (uint32_t *)malloc(s_prim_cap * 4);
+                if (!s_prim_idx)
+                    return 0;
+            }
+            for (i = 0; i + 2 < cnt; i++) {
+                s_prim_idx[i * 3 + 0] = b->indices[0];
+                s_prim_idx[i * 3 + 1] = b->indices[i + 1];
+                s_prim_idx[i * 3 + 2] = b->indices[i + 2];
+            }
+            *idx = s_prim_idx;
+            *n = (uint32_t)need;
+        }
+        *topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; *cls = 2; return 1;
+    }
     case 3:                                      /* LINE_LOOP: strip + first */
     case 8: {                                    /* QUADS -> triangles */
         size_t need = b->prim == 3 ? (size_t)b->index_count + 1 : (size_t)b->index_count / 4 * 6;
@@ -3482,7 +3508,13 @@ static void vk_flip(void)
 
     VT("flip %u: surface %08X drew %d, acquiring\n", s_frame, s ? s->va : 0, s_drew_any);
     if (!s_headless && !nfsu2_ios_background()) {
-        VkResult rr = vkAcquireNextImageKHR(s_dev, s_swapchain, UINT64_MAX, s_f->acquired,
+        VkResult rr;
+        if (s_sc_dirty) {
+            vkDeviceWaitIdle(s_dev);
+            create_swapchain();
+            s_sc_dirty = 0;
+        }
+        rr = vkAcquireNextImageKHR(s_dev, s_swapchain, UINT64_MAX, s_f->acquired,
                                             VK_NULL_HANDLE, &idx);
         if (rr == VK_ERROR_OUT_OF_DATE_KHR) {
             vkDeviceWaitIdle(s_dev);
@@ -3555,9 +3587,11 @@ static void vk_flip(void)
         si.signalSemaphoreCount = 1;
         si.pSignalSemaphores = &s_f->rendered;
     }
-    if (vkQueueSubmit(s_queue, 1, &si, s_f->fence) != VK_SUCCESS)
-        LOGE("vkQueueSubmit failed\n");
-    s_f->submitted = 1;
+    if (vkQueueSubmit(s_queue, 1, &si, s_f->fence) != VK_SUCCESS) {
+        LOGE("vkQueueSubmit failed - frame fence will not signal\n");
+        s_f->submitted = 0;
+    } else
+        s_f->submitted = 1;
     if (have_image) {
         VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         VkResult pr;

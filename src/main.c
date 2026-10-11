@@ -380,13 +380,6 @@ int main(int argc, char **argv)
 
     (void)argc;
     (void)argv;
-    /* Redirect the log FIRST so main-thread init output is captured. */
-    ios_log_to_documents();
-    setvbuf(stderr, NULL, _IONBF, 0);
-    fprintf(stderr, "nfsu2: build v8 (log capture from main + renderer diag)\n");
-    fprintf(stderr, "nfsu2: HOME=%s TMPDIR=%s\n",
-            getenv("CFFIXED_USER_HOME") ? getenv("CFFIXED_USER_HOME") : "(unset)",
-            getenv("TMPDIR") ? getenv("TMPDIR") : "(unset)");
     switch_boot();
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 16u * 1024 * 1024);
@@ -437,7 +430,7 @@ int main(int argc, char **argv)
     /* Redirect the log FIRST so main-thread init output is captured. */
     ios_log_to_documents();
     setvbuf(stderr, NULL, _IONBF, 0);
-    fprintf(stderr, "nfsu2: build v8 (log capture from main + renderer diag)\n");
+    fprintf(stderr, "nfsu2: build v9 (fan->list, landscape plist, bg-safe present, overlay)\n");
     fprintf(stderr, "nfsu2: HOME=%s TMPDIR=%s\n",
             getenv("CFFIXED_USER_HOME") ? getenv("CFFIXED_USER_HOME") : "(unset)",
             getenv("TMPDIR") ? getenv("TMPDIR") : "(unset)");
@@ -471,8 +464,13 @@ int main(int argc, char **argv)
         if (!win)
             fprintf(stderr, "nfsu2: FATAL no window; refusing off-main fallback\n");
         else {
-            /* Visible touch controls: a transparent UIKit overlay above the
-             * render view, one ellipse per zone from xinput_ios. */
+            extern int nv2a_vk_init_on_main(void);
+            fprintf(stderr, "nfsu2: eager renderer init on main thread\n");
+            int ok = nv2a_vk_init_on_main();
+            fprintf(stderr, "nfsu2: eager init %s\n", ok ? "ok" : "FAILED (headless)");
+            /* Overlay AFTER renderer init: SDL reassigns rootViewController's
+             * view when the Metal view is created, which would bury the
+             * overlay under the render view if installed earlier. */
             struct sdl_syswm_info smi;
             memset(&smi, 0, sizeof smi);
             smi.version_major = 2; smi.version_minor = 30; smi.version_patch = 9;
@@ -483,10 +481,6 @@ int main(int argc, char **argv)
             } else {
                 fprintf(stderr, "nfsu2: touch overlay unavailable (syswm=%u)\n", smi.subsystem);
             }
-            extern int nv2a_vk_init_on_main(void);
-            fprintf(stderr, "nfsu2: eager renderer init on main thread\n");
-            int ok = nv2a_vk_init_on_main();
-            fprintf(stderr, "nfsu2: eager init %s\n", ok ? "ok" : "FAILED (headless)");
         }
     }
     pthread_attr_init(&attr);
@@ -515,13 +509,20 @@ int main(int argc, char **argv)
                     break;
                 }
                 if (we->type == SDL_WINDOWEVENT) {
-                    /* 5=MINIMIZED 6=HIDDEN 9=FOCUS_LOST (background/resign);
-                     * 4=SHOWN 7=EXPOSED 10=FOCUS_GAINED (foreground). */
+                    /* SDL2: 5=RESIZED 6=SIZE_CHANGED 7=MINIMIZED 8=HIDDEN
+                     * 9=RESTORED 12=FOCUS_GAINED 13=FOCUS_LOST. Background =
+                     * MINIMIZED/HIDDEN/FOCUS_LOST; foreground = RESTORED/
+                     * FOCUS_GAINED/EXPOSED(3)/SHOWN(4)/SIZE_CHANGED(6). */
                     fprintf(stderr, "nfsu2: windowevent %d\n", we->ev);
-                    if (we->ev == 5 || we->ev == 6 || we->ev == 9)
+                    if (we->ev == 7 || we->ev == 8 || we->ev == 13)
                         nv2a_vk_set_background(1);
-                    else if (we->ev == 4 || we->ev == 7 || we->ev == 10)
+                    else
                         nv2a_vk_set_background(0);
+                    if (we->ev == 6) {
+                        /* Rotation: the swapchain extent is now stale; the
+                         * next flip recreates it via OUT_OF_DATE handling. */
+                        nv2a_vk_mark_swapchain_dirty();
+                    }
                 }
             }
         }
@@ -543,7 +544,7 @@ static int game_main(void)
 #ifdef NFSU2_IOS
     ios_log_to_documents();
     setvbuf(stderr, NULL, _IONBF, 0);
-    fprintf(stderr, "nfsu2: build v8 (log capture from main + renderer diag)\n");
+    fprintf(stderr, "nfsu2: build v9 (fan->list, landscape plist, bg-safe present, overlay)\n");
     fprintf(stderr, "nfsu2: HOME=%s CFFIXED_USER_HOME=%s TMPDIR=%s\n",
             getenv("HOME") ? getenv("HOME") : "(unset)",
             getenv("CFFIXED_USER_HOME") ? getenv("CFFIXED_USER_HOME") : "(unset)",
