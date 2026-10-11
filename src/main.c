@@ -69,6 +69,16 @@ extern void xbox_path_init(const char *game_dir, const char *save_dir);
 #define NFSU2_ENTRY_POINT 0x0021B1CEu
 
 
+#ifdef NFSU2_IOS
+static void ios_crash_handler(int sig)
+{
+    static const char msg[] =
+        "[CRASH] fatal signal caught - last [VKINIT] marker above shows the stage\n";
+    (void)!write(2, msg, sizeof msg - 1);
+    _exit(139);
+}
+#endif
+
 /* iOS detection, once: the iphoneos SDK predefines __IPHONE_OS_VERSION_MIN_REQUIRED__.
  * (TargetConditionals' TARGET_OS_IPHONE only exists after its header.) */
 /* clang's Darwin driver predefines __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__
@@ -364,23 +374,11 @@ static int game_main(void)
     size_t xbe_size = 0;
 #ifdef NFSU2_IOS
     ios_log_to_documents();
-#ifdef NFSU2_IOS
     setvbuf(stderr, NULL, _IONBF, 0);
-    /* Native crash reporter: freopen'd stderr dies with the process on a
-     * signal, so record the signal in the log first. */
-    {
-        static char crash_msg[128];
-        void crash_handler(int sig) {
-            snprintf(crash_msg, sizeof crash_msg,
-                     "[CRASH] signal %d caught - last [VKINIT] marker above shows the stage\n", sig);
-            (void)!write(2, crash_msg, strlen(crash_msg));
-            _exit(139);
-        }
-        signal(SIGSEGV, crash_handler);
-        signal(SIGBUS, crash_handler);
-        signal(SIGILL, crash_handler);
-        signal(SIGABRT, crash_handler);
-    }
+    signal(SIGSEGV, ios_crash_handler);
+    signal(SIGBUS, ios_crash_handler);
+    signal(SIGILL, ios_crash_handler);
+    signal(SIGABRT, ios_crash_handler);
 #endif
     fprintf(stderr, "nfsu2: build v5 (VKINIT markers + crash handler)\n");
     fprintf(stderr, "nfsu2: HOME=%s CFFIXED_USER_HOME=%s TMPDIR=%s\n",
