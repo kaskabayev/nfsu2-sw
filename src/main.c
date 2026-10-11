@@ -72,9 +72,64 @@ extern void xbox_path_init(const char *game_dir, const char *save_dir);
 #if defined(__SWITCH__)
 #  define NFSU2_DEFAULT_GAME_DIR "sdmc:/switch/nfsu2x/game"
 #  define NFSU2_DEFAULT_SAVE_DIR "sdmc:/switch/nfsu2x/save"
+#elif defined(__APPLE__) && (defined(__IPHONE_OS_VERSION_MIN_REQUIRED__) || \
+                             (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE))
+/* iOS sandbox: the app bundle is read-only; the game data goes in the app's
+ * Documents folder (Files app → On My iPhone → NFSU2, or pushed by
+ * SideStore/Filza). NFSU2_GAME_DIR still wins if set. */
+#  define NFSU2_DEFAULT_GAME_DIR NSTemporaryDirectory_path("Documents")
+#  define NFSU2_DEFAULT_SAVE_DIR NSTemporaryDirectory_path("Documents/Saves")
 #else
 #  define NFSU2_DEFAULT_GAME_DIR "game"
 #  define NFSU2_DEFAULT_SAVE_DIR NULL
+#endif
+
+#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED__
+/* Forward declaration: the default-dir macros expand to this call. */
+static const char *NSTemporaryDirectory_path(const char *sub);
+/* stderr has no console on iOS: mirror it to Documents/nfsu2_log.txt so the
+ * first boots are diagnosable from the Files app. */
+static void ios_log_to_documents(void)
+{
+    static char log_path[1100];
+    snprintf(log_path, sizeof log_path, "%s/nfsu2_log.txt",
+             NSTemporaryDirectory_path("Documents"));
+    if (!freopen(log_path, "w", stderr))
+        return;
+    setvbuf(stderr, NULL, _IOLBF, 0);
+}
+/* Documents = the app sandbox's Documents folder. Computed once, kept
+ * for the process lifetime (xbox_path_init copies the string). */
+static char nfsu2_ios_dir[1024];
+static char nfsu2_ios_save[1024];
+static const char *NSTemporaryDirectory_path(const char *sub)
+{
+    /* CFFIXED_USER_HOME is the sandbox home iOS sets for every app; Documents
+     * sits directly in it. TMPDIR is <sandbox>/tmp, so from there Documents is
+     * one level up. */
+    const char *home = getenv("CFFIXED_USER_HOME");
+    if (home && home[0])
+        snprintf(nfsu2_ios_dir, sizeof nfsu2_ios_dir, "%s/Documents", home);
+    else {
+        const char *tmp = getenv("TMPDIR");
+        if (!tmp || !tmp[0])
+            tmp = "/tmp";
+        size_t n = strlen(tmp);
+        while (n > 1 && tmp[n - 1] == '/')
+            n--;
+        snprintf(nfsu2_ios_dir, sizeof nfsu2_ios_dir, "%.*s/Documents",
+                 (int)(strcmp(tmp + n - 4, "/tmp") == 0 ? n - 4 : n), tmp);
+    }
+    snprintf(nfsu2_ios_save, sizeof nfsu2_ios_save, "%s/Saves", nfsu2_ios_dir);
+    (void)sub;
+    return nfsu2_ios_dir;
+}
+static const char *ios_save_dir(void)
+{
+    if (!nfsu2_ios_save[0])
+        NSTemporaryDirectory_path("Documents");
+    return nfsu2_ios_save;
+}
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -297,6 +352,9 @@ static int game_main(void)
     const char *game_dir;
     void *xbe_data;
     size_t xbe_size = 0;
+#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED__
+    ios_log_to_documents();
+#endif
 
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -420,7 +478,11 @@ static int game_main(void)
 
     xbox_kernel_init();
     nfsu2_text_patch_init();
+#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED__
+    xbox_path_init(game_dir, ios_save_dir());
+#else
     xbox_path_init(game_dir, NFSU2_DEFAULT_SAVE_DIR);
+#endif
     xbox_kernel_bridge_init();
 
     g_esp = XBOX_STACK_TOP;
