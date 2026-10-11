@@ -85,7 +85,6 @@ static const char *zone_label(int value)
               withAttributes:attrs];
         }
     }
-    (void)zone_label_kind;
 }
 @end
 
