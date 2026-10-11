@@ -98,8 +98,7 @@ static void ios_crash_handler(int sig)
 int SDL_InitSubSystem(uint32_t flags);
 void *SDL_CreateWindow(const char *title, int x, int y, int w, int h, uint32_t flags);
 const char *SDL_GetError(void);
-union SDL_Event;
-int SDL_WaitEvent(union SDL_Event *event);
+int SDL_WaitEvent(void *event);
 #endif
 
 #if defined(__SWITCH__)
@@ -428,10 +427,12 @@ int main(int argc, char **argv)
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 16u * 1024 * 1024);
     if (pthread_create(&th, &attr, ios_game_thread, &rc) == 0) {
-        SDL_Event ev;
+        /* SDL_Event is opaque here (main.c avoids SDL.h): 64 bytes is its
+         * sizeof on every SDL2 target. */
+        char ev[64] __attribute__((aligned(16)));
         for (;;) {
             /* Blocks; also keeps the SDL/UIKit state serviced. */
-            if (!SDL_WaitEvent(&ev))
+            if (!SDL_WaitEvent(ev))
                 break;
             /* Events are consumed by the touch watch; nothing else. */
         }
