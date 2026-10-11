@@ -504,6 +504,7 @@ int main(int argc, char **argv)
             {
                 struct sdl_winev *we = (struct sdl_winev *)ev;
                 extern void nv2a_vk_set_background(int bg);
+                extern void nv2a_vk_mark_swapchain_dirty(void);
                 if (we->type == SDL_QUIT) {
                     fprintf(stderr, "nfsu2: SDL_QUIT\n");
                     break;
