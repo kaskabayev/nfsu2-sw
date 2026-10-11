@@ -69,16 +69,6 @@ extern void xbox_path_init(const char *game_dir, const char *save_dir);
 #define NFSU2_ENTRY_POINT 0x0021B1CEu
 
 
-#ifdef NFSU2_IOS
-static void ios_crash_handler(int sig)
-{
-    static const char msg[] =
-        "[CRASH] fatal signal caught - last [VKINIT] marker above shows the stage\n";
-    (void)!write(2, msg, sizeof msg - 1);
-    _exit(139);
-}
-#endif
-
 /* iOS detection, once: the iphoneos SDK predefines __IPHONE_OS_VERSION_MIN_REQUIRED__.
  * (TargetConditionals' TARGET_OS_IPHONE only exists after its header.) */
 /* clang's Darwin driver predefines __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__
@@ -87,6 +77,16 @@ static void ios_crash_handler(int sig)
 #if defined(__APPLE__) && (defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__) || \
                            defined(__IPHONE_OS_VERSION_MIN_REQUIRED__))
 #  define NFSU2_IOS 1
+#endif
+
+#ifdef NFSU2_IOS
+static void ios_crash_handler(int sig)
+{
+    static const char msg[] =
+        "[CRASH] fatal signal caught - last [VKINIT] marker above shows the stage\n";
+    (void)!write(2, msg, sizeof msg - 1);
+    _exit(139);
+}
 #endif
 
 #if defined(__SWITCH__)
