@@ -102,12 +102,19 @@ int SDL_WaitEvent(void *event);
 void SDL_SetHint(const char *name, const char *value);
 int SDL_PollEvent(void *event);
 /* SDL_syswm.h subset: SDL_GetWindowWMInfo(SDL_Window*, SDL_SysWMinfo*).
- * The UIKit variant carries the UIWindow at info.info.uikit.window. */
-struct sdl_syswm_uikit { void *window; };
+ * Layout per SDL 2.30.x: version = three single BYTES, then an int
+ * subsystem at offset 4, then the union at offset 8. The UIKit variant
+ * writes the UIWindow at info.uikit.window (and framebuffer fields after
+ * it from 2.0.4 - hence the 64-byte dummy to make room). */
+struct sdl_syswm_uikit { void *window; uint32_t framebuffer, colorbuffer,
+                          resolveframebuffer; };
 struct sdl_syswm_info {
-    uint32_t version_major, version_minor, version_patch;
-    uint32_t subsystem;
-    union { struct sdl_syswm_uikit uikit; } info;
+    uint8_t version_major, version_minor, version_patch;
+    int subsystem;
+    union {
+        struct sdl_syswm_uikit uikit;
+        uint8_t dummy[64];
+    } info;
 };
 int SDL_GetWindowWMInfo(void *window, struct sdl_syswm_info *info);
 /* SDL_hints.h / SDL_video.h / SDL_syswm.h values */
@@ -115,6 +122,8 @@ int SDL_GetWindowWMInfo(void *window, struct sdl_syswm_info *info);
 #define SDL_WINDOWEVENT 0x200
 #define SDL_QUIT 0x100
 #define SDL_SYSWM_UIKIT 4
+#define SDL_APP_WILLENTERBACKGROUND 0x103
+#define SDL_APP_DIDENTERFOREGROUND 0x106
 /* SDL_WindowEvent: type, timestamp, windowID, event, padding, data1, data2 */
 struct sdl_winev { uint32_t type, ts; uint32_t win; uint8_t ev; int pad; int d1, d2; };
 #endif
@@ -510,18 +519,20 @@ int main(int argc, char **argv)
                     break;
                 }
                 if (we->type == SDL_WINDOWEVENT) {
-                    /* SDL2: 5=RESIZED 6=SIZE_CHANGED 7=MINIMIZED 8=HIDDEN
-                     * 9=RESTORED 12=FOCUS_GAINED 13=FOCUS_LOST. Background =
-                     * MINIMIZED/HIDDEN/FOCUS_LOST; foreground = RESTORED/
-                     * FOCUS_GAINED/EXPOSED(3)/SHOWN(4)/SIZE_CHANGED(6). */
+                    /* SDL2 SDL_WINDOWEVENT_* : 1=SHOWN 2=HIDDEN 3=EXPOSED
+                     * 5=RESIZED 6=SIZE_CHANGED 7=MINIMIZED 9=RESTORED
+                     * 12=FOCUS_GAINED 13=FOCUS_LOST. Set the background flag
+                     * on HIDDEN/MINIMIZED/FOCUS_LOST; clear it ONLY on the
+                     * explicit foreground events (RESTORED/FOCUS_GAINED) so
+                     * incidental events never un-pause a hidden app. */
                     fprintf(stderr, "nfsu2: windowevent %d\n", we->ev);
-                    if (we->ev == 7 || we->ev == 8 || we->ev == 13)
+                    if (we->ev == 2 || we->ev == 7 || we->ev == 13)
                         nv2a_vk_set_background(1);
-                    else
+                    else if (we->ev == 9 || we->ev == 12)
                         nv2a_vk_set_background(0);
                     if (we->ev == 6) {
                         /* Rotation: the swapchain extent is now stale; the
-                         * next flip recreates it via OUT_OF_DATE handling. */
+                         * next flip recreates it before acquiring. */
                         nv2a_vk_mark_swapchain_dirty();
                     }
                 }

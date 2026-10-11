@@ -3576,6 +3576,13 @@ static void vk_flip(void)
                                  VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &b);
         }
     }
+    /* iOS: a backgrounded app may not submit GPU work at all. Park here
+     * (renderer thread) until the app is foreground again; the guest's
+     * vblank pacing simply stops for that time. */
+    while (nfsu2_ios_background()) {
+        struct timespec ts = { 0, 20 * 1000 * 1000 };
+        nanosleep(&ts, NULL);
+    }
     VT("flip %u: submit (image %d)\n", s_frame, have_image);
     vkEndCommandBuffer(s_cb);
     si.commandBufferCount = 1;
@@ -3592,7 +3599,7 @@ static void vk_flip(void)
         s_f->submitted = 0;
     } else
         s_f->submitted = 1;
-    if (have_image) {
+    if (have_image && s_f->submitted) {
         VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         VkResult pr;
         pi.waitSemaphoreCount = 1;
@@ -3621,7 +3628,9 @@ static void vk_flip(void)
     VT("flip %u: next frame recording\n", s_frame);
     s_dyn_valid = 0;
 #if !defined(__SWITCH__)
-    if (s_win) {
+    if (s_win && !s_window_required) {
+        /* Only standalone/SDL-main builds pump here; on iOS the main() loop
+         * owns the queue and stealing events loses background/resize. */
         SDL_Event e;
         while (SDL_PollEvent(&e)) { }
     }
