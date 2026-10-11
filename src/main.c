@@ -32,16 +32,6 @@ void switch_boot(void);
 void switch_shutdown(void);
 void switch_error_dialog(const char *msg, const char *details);
 #elif !defined(_WIN32)
-#ifdef NFSU2_IOS
-/* SDL constants (values from SDL_video.h) — main.c avoids including SDL.h */
-#define SDL_INIT_VIDEO          0x00000020u
-#define SDL_WINDOWPOS_CENTERED  0x2FFF0000u
-#define SDL_WINDOW_VULKAN       0x10000000u
-#define SDL_WINDOW_RESIZABLE    0x00000020u
-int SDL_InitSubSystem(uint32_t flags);
-void *SDL_CreateWindow(const char *title, int x, int y, int w, int h, uint32_t flags);
-const char *SDL_GetError(void);
-#endif
 
 int SDL_ShowSimpleMessageBox(uint32_t flags, const char *title, const char *message,
                              void *window);
@@ -98,6 +88,15 @@ static void ios_crash_handler(int sig)
     (void)!write(2, msg, sizeof msg - 1);
     _exit(139);
 }
+
+/* SDL constants (values from SDL_video.h) — main.c avoids including SDL.h */
+#define SDL_INIT_VIDEO          0x00000020u
+#define SDL_WINDOWPOS_CENTERED  0x2FFF0000u
+#define SDL_WINDOW_VULKAN       0x10000000u
+#define SDL_WINDOW_RESIZABLE    0x00000020u
+int SDL_InitSubSystem(uint32_t flags);
+void *SDL_CreateWindow(const char *title, int x, int y, int w, int h, uint32_t flags);
+const char *SDL_GetError(void);
 #endif
 
 #if defined(__SWITCH__)
