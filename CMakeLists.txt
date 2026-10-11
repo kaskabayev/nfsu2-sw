@@ -176,14 +176,14 @@ endif()
 # The workflow packages the binary into NFSU2.app / an unsigned IPA.
 if(IOS AND NOT NINTENDO_SWITCH)
     find_package(SDL2 REQUIRED)
-    # SDL2 static on iOS: the library owns UIApplicationMain; our main() is
-    # renamed through SDL_main.h (forced into every translation unit).
+    # SDL2 static on iOS: SDL2main carries the UIKit event pump's main(); our
+    # main() is renamed through SDL_main.h (forced into every translation unit).
     target_include_directories(${PROJECT_NAME} PRIVATE
         $<TARGET_PROPERTY:SDL2::SDL2,INTERFACE_INCLUDE_DIRECTORIES>)
     target_compile_options(${PROJECT_NAME} PRIVATE -include SDL_main.h)
-    # libSDL2.a owns main() (UIKit event pump); -u pulls that member from the
-    # static archive even though nothing else references main before it loads.
-    target_link_options(${PROJECT_NAME} PRIVATE -Wl,-u,_main)
+    if(TARGET SDL2::SDL2main)
+        target_link_libraries(${PROJECT_NAME} PRIVATE SDL2::SDL2main)
+    endif()
     target_link_libraries(${PROJECT_NAME} PRIVATE
         SDL2::SDL2 "-framework UIKit" "-framework Metal" "-framework GameController"
         "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreMotion"
