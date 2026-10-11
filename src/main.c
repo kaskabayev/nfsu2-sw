@@ -107,6 +107,7 @@ static void ios_log_to_documents(void)
  * for the process lifetime (xbox_path_init copies the string). */
 static char nfsu2_ios_dir[1024];
 static char nfsu2_ios_save[1024];
+static char nfsu2_ios_gamedir[1024];
 static const char *NSTemporaryDirectory_path(const char *sub)
 {
     /* CFFIXED_USER_HOME is the sandbox home iOS sets for every app; Documents
@@ -359,6 +360,7 @@ static int game_main(void)
     size_t xbe_size = 0;
 #ifdef NFSU2_IOS
     ios_log_to_documents();
+    fprintf(stderr, "nfsu2: booting, game dir will resolve below\n");
 #endif
 
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -392,7 +394,40 @@ static int game_main(void)
     game_dir = getenv("NFSU2_GAME_DIR");
     if (!game_dir || !game_dir[0])
         game_dir = NFSU2_DEFAULT_GAME_DIR;
+#ifdef NFSU2_IOS
+    /* Files pushed from a PC often land one level deeper than expected.
+     * Before failing, probe the layouts people actually produce. */
+    {
+        static const char *alts[] = { "NFSU2-data", "game", "nfsu2", "NFSU2" };
+        char probe[1100];
+        FILE *f;
+        size_t i;
+        int found = 0;
+
+        snprintf(probe, sizeof probe, "%s/default.xbe", game_dir);
+        f = fopen(probe, "rb");
+        if (f) { fclose(f); found = 1; }
+        for (i = 0; !found && i < sizeof alts / sizeof alts[0]; i++) {
+            snprintf(nfsu2_ios_gamedir, sizeof nfsu2_ios_gamedir,
+                     "%s/%s", game_dir, alts[i]);
+            snprintf(probe, sizeof probe, "%s/default.xbe", nfsu2_ios_gamedir);
+            f = fopen(probe, "rb");
+            if (f) {
+                fclose(f);
+                game_dir = nfsu2_ios_gamedir;
+                found = 1;
+            }
+        }
+        if (!found)
+            fprintf(stderr, "nfsu2: no default.xbe under %s (probed subdirs)\n",
+                    game_dir);
+    }
+#endif
     snprintf(xbe_path, sizeof(xbe_path), "%s/default.xbe", game_dir);
+#ifdef NFSU2_IOS
+    fprintf(stderr, "nfsu2: game dir = %s\n", game_dir);
+    fprintf(stderr, "nfsu2: loading %s\n", xbe_path);
+#endif
 
     xbe_data = load_file(xbe_path, &xbe_size);
     if (!xbe_data) {
