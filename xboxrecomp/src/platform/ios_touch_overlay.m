@@ -54,7 +54,7 @@ static int zone_label_kind(int kind)
                               (z[i].cy - ry2) * H,
                               rr * 2 * W,
                               ry2 * 2 * H);
-        CGContextSetRGBFillColor(c, 1, 1, 1, 0.12);
+        CGContextSetRGBFillColor(c, 1, 1, 1, 0.18);
         CGContextSetRGBStrokeColor(c, 1, 1, 1, 0.85);
         CGContextSetLineWidth(c, 1.5);
         CGPathRef p = CGPathCreateWithEllipseInRect(r, NULL);
@@ -73,8 +73,23 @@ void ios_touch_overlay_install(void *uiwindow)
     UIWindow *win = (__bridge UIWindow *)uiwindow;
     if (!win)
         return;
+    /* If a previous install exists, refresh its frame instead of stacking. */
+    for (UIView *sub in win.subviews)
+        if ([sub isKindOfClass:[Nfsu2Overlay class]]) {
+            [sub removeFromSuperview];
+            break;
+        }
     Nfsu2Overlay *ov = [[Nfsu2Overlay alloc] initWithFrame:win.bounds];
     ov.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     ov.tag = 0x4E463531;                 /* 'NF51' */
+    /* Add ABOVE SDL's view (SDL reassigns rootViewController.view when the
+     * Metal view is created, so a plain addSubview can land underneath) and
+     * force it to the front of the z-order. */
     [win addSubview:ov];
+    [win bringSubviewToFront:ov];
+    /* Draw once now; without this the first frame may not invalidate. */
+    [ov setNeedsDisplay];
+    fprintf(stderr, "nfsu2: overlay frame %g x %g subviews %lu\n",
+            (double)ov.frame.size.width, (double)ov.frame.size.height,
+            (unsigned long)win.subviews.count);
 }
