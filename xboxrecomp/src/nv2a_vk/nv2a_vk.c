@@ -1921,6 +1921,8 @@ static int ready(void)
     if (s_state)
         return s_state > 0;
     s_state = -1;
+    fprintf(stderr, "[VKINIT] begin (thread main?%d)\n", SDL_ThreadID() == 1);
+    fflush(stderr);
     s_trace = getenv("RECOMP_GL_TRACE") != NULL;
     {
         const char *e = getenv("RECOMP_VK_TRACE");
@@ -1974,10 +1976,14 @@ static int ready(void)
     ici.ppEnabledExtensionNames = iext;
     ici.enabledLayerCount = nlayers;
     ici.ppEnabledLayerNames = layers;
+    fprintf(stderr, "[VKINIT] creating instance (%u exts)\n", niext);
+    for (i = 0; i < niext; i++) fprintf(stderr, "[VKINIT]   ext: %s\n", iext[i]);
+    fflush(stderr);
     if (vkCreateInstance(&ici, NULL, &s_inst) != VK_SUCCESS) {
         LOGE("vkCreateInstance failed\n");
         return 0;
     }
+    fprintf(stderr, "[VKINIT] instance ok\n"); fflush(stderr);
     n = 8;
     if (vkEnumeratePhysicalDevices(s_inst, &n, pds) != VK_SUCCESS || !n) {
         LOGE("no Vulkan device\n");
@@ -1985,6 +1991,7 @@ static int ready(void)
     }
     s_pd = pds[0];
     vkGetPhysicalDeviceProperties(s_pd, &pp);
+    fprintf(stderr, "[VKINIT] physical device ok\n"); fflush(stderr);
     fprintf(stderr, "  [VK] %s, Vulkan %u.%u.%u\n", pp.deviceName, VK_API_VERSION_MAJOR(pp.apiVersion),
             VK_API_VERSION_MINOR(pp.apiVersion), VK_API_VERSION_PATCH(pp.apiVersion));
     s_ubo_align = pp.limits.minUniformBufferOffsetAlignment;
@@ -2041,6 +2048,7 @@ static int ready(void)
         }
     }
 #else
+    fprintf(stderr, "[VKINIT] creating surface (win=%p)\n", (void*)s_win); fflush(stderr);
     if (!s_headless && !SDL_Vulkan_CreateSurface(s_win, s_inst, &s_surface)) {
         LOGE("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
         s_headless = 1;
@@ -2087,6 +2095,7 @@ static int ready(void)
     GET(p_stencil_op, "vkCmdSetStencilOp");
 #undef GET
 
+    fprintf(stderr, "[VKINIT] device+GET done\n"); fflush(stderr);
     if (!s_headless && !create_swapchain()) {
         LOGE("swapchain creation failed; running headless\n");
         s_headless = 1;

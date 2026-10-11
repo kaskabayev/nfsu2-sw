@@ -364,7 +364,25 @@ static int game_main(void)
     size_t xbe_size = 0;
 #ifdef NFSU2_IOS
     ios_log_to_documents();
-    fprintf(stderr, "nfsu2: build v4 (Documents probe)\n");
+#ifdef NFSU2_IOS
+    setvbuf(stderr, NULL, _IONBF, 0);
+    /* Native crash reporter: freopen'd stderr dies with the process on a
+     * signal, so record the signal in the log first. */
+    {
+        static char crash_msg[128];
+        void crash_handler(int sig) {
+            snprintf(crash_msg, sizeof crash_msg,
+                     "[CRASH] signal %d caught - last [VKINIT] marker above shows the stage\n", sig);
+            (void)!write(2, crash_msg, strlen(crash_msg));
+            _exit(139);
+        }
+        signal(SIGSEGV, crash_handler);
+        signal(SIGBUS, crash_handler);
+        signal(SIGILL, crash_handler);
+        signal(SIGABRT, crash_handler);
+    }
+#endif
+    fprintf(stderr, "nfsu2: build v5 (VKINIT markers + crash handler)\n");
     fprintf(stderr, "nfsu2: HOME=%s CFFIXED_USER_HOME=%s TMPDIR=%s\n",
             getenv("HOME") ? getenv("HOME") : "(unset)",
             getenv("CFFIXED_USER_HOME") ? getenv("CFFIXED_USER_HOME") : "(unset)",
