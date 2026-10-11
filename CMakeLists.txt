@@ -48,6 +48,12 @@ set(GAME_SOURCES
 src/nic.c
 )
 
+if(IOS)
+    list(APPEND GAME_SOURCES xboxrecomp/src/platform/ios_touch_overlay.m)
+    set_source_files_properties(xboxrecomp/src/platform/ios_touch_overlay.m PROPERTIES
+        COMPILE_FLAGS "-I${CMAKE_SOURCE_DIR}/xboxrecomp/src/input -fobjc-arc")
+endif()
+
 if(WIN32)
     add_executable(${PROJECT_NAME} WIN32 ${GAME_SOURCES} ${RECOMP_GEN_SOURCES})
 else()

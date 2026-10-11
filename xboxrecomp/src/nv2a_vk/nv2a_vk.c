@@ -1548,6 +1548,12 @@ static VkProg *prog_get(const Nv2aRawBatch *b, const Nv2aPshKey *pk)
 
 static int s_dyn_vertex_input;
 
+/* iOS: set by main.c when the app is backgrounded/hidden; vk_flip skips
+ * acquire/present while it holds (Metal blocks present in background). */
+static int s_ios_bg;
+void nv2a_vk_set_background(int bg) { s_ios_bg = bg; }
+int nfsu2_ios_background(void) { return s_ios_bg; }
+
 /* iOS diag: 0x1 init-tried, 0x2 init-ok, 0x4 headless, 0x8 dyn-vi present. */
 int nv2a_vk_diag(void)
 {
@@ -3133,6 +3139,12 @@ static void vk_draw_raw(const Nv2aRawBatch *b)
         vkCmdBindPipeline(s_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
         cur_pipe = pipe;
         cur_pipe_gen = s_cb_gen;
+        /* Binding a pipeline resets every dynamic state to the pipeline's
+         * defaults. In per-layout fallback mode there are many distinct
+         * pipelines, so the guest-state change-detection in apply_dynamic
+         * would skip re-issuing identical state — leaving winding/cull
+         * undefined after each new bind (the one-triangle-wedge bug). */
+        s_dyn_valid = 0;
     }
     apply_dynamic(r, d != NULL, topo);
     set_surface_scissor(r, s);
@@ -3469,7 +3481,7 @@ static void vk_flip(void)
     barrier_all();
 
     VT("flip %u: surface %08X drew %d, acquiring\n", s_frame, s ? s->va : 0, s_drew_any);
-    if (!s_headless) {
+    if (!s_headless && !nfsu2_ios_background()) {
         VkResult rr = vkAcquireNextImageKHR(s_dev, s_swapchain, UINT64_MAX, s_f->acquired,
                                             VK_NULL_HANDLE, &idx);
         if (rr == VK_ERROR_OUT_OF_DATE_KHR) {

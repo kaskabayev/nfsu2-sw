@@ -443,6 +443,7 @@ int main(int argc, char **argv)
     }
     {
         extern void nv2a_vk_set_window(void *win);
+        SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
         SDL_InitSubSystem(SDL_INIT_VIDEO);
         fprintf(stderr, "nfsu2: creating SDL window on main thread\n");
         void *win = SDL_CreateWindow("NFSU2", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -452,6 +453,18 @@ int main(int argc, char **argv)
         if (!win)
             fprintf(stderr, "nfsu2: FATAL no window; refusing off-main fallback\n");
         else {
+            /* Visible touch controls: a transparent UIKit overlay above the
+             * render view, one ellipse per zone from xinput_ios. */
+            struct sdl_syswm_info smi;
+            memset(&smi, 0, sizeof smi);
+            smi.version_major = 2; smi.version_minor = 30; smi.version_patch = 9;
+            if (SDL_GetWindowWMInfo(win, &smi) && smi.subsystem == SDL_SYSWM_UIKIT) {
+                extern void ios_touch_overlay_install(void *uiwindow);
+                ios_touch_overlay_install(smi.info.uikit.window);
+                fprintf(stderr, "nfsu2: touch overlay installed\n");
+            } else {
+                fprintf(stderr, "nfsu2: touch overlay unavailable (syswm=%u)\n", smi.subsystem);
+            }
             extern int nv2a_vk_init_on_main(void);
             fprintf(stderr, "nfsu2: eager renderer init on main thread\n");
             int ok = nv2a_vk_init_on_main();
@@ -468,10 +481,31 @@ int main(int argc, char **argv)
          * sizeof on every SDL2 target. */
         char ev[64] __attribute__((aligned(16)));
         for (;;) {
+            int got;
             /* Blocks; also keeps the SDL/UIKit state serviced. */
-            if (!SDL_WaitEvent(ev))
+            while (!(got = SDL_PollEvent(ev))) {
+                struct timespec ts = { 0, 16 * 1000 * 1000 };
+                nanosleep(&ts, NULL);
+            }
+            if (!got)
                 break;
-            /* Events are consumed by the touch watch; nothing else. */
+            {
+                struct sdl_winev *we = (struct sdl_winev *)ev;
+                extern void nv2a_vk_set_background(int bg);
+                if (we->type == SDL_QUIT) {
+                    fprintf(stderr, "nfsu2: SDL_QUIT\n");
+                    break;
+                }
+                if (we->type == SDL_WINDOWEVENT) {
+                    /* 5=MINIMIZED 6=HIDDEN 9=FOCUS_LOST (background/resign);
+                     * 4=SHOWN 7=EXPOSED 10=FOCUS_GAINED (foreground). */
+                    fprintf(stderr, "nfsu2: windowevent %d\n", we->ev);
+                    if (we->ev == 5 || we->ev == 6 || we->ev == 9)
+                        nv2a_vk_set_background(1);
+                    else if (we->ev == 4 || we->ev == 7 || we->ev == 10)
+                        nv2a_vk_set_background(0);
+                }
+            }
         }
         pthread_join(th, NULL);
     } else {
