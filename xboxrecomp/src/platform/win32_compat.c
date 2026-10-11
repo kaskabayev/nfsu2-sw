@@ -1098,10 +1098,11 @@ HANDLE CreateThread(LPSECURITY_ATTRIBUTES sa, SIZE_T stackSize,
 
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-#if defined(__SWITCH__)
+#if defined(__SWITCH__) || defined(NFSU2_IOS)
     /* Recompiled code nests host calls as deep as the guest nests its own,
-     * and Horizon's default thread stack is a fraction of the 8 MB a Linux
-     * thread gets. Match Linux rather than find the overflow in a game. */
+     * and Horizon's/iOS's default thread stack is a fraction of the 8 MB a
+     * Linux thread gets. Match Linux rather than find the overflow in a
+     * game (iOS pthreads default to 512 KB). */
     if (stackSize < 8u * 1024 * 1024)
         stackSize = 8u * 1024 * 1024;
 #endif

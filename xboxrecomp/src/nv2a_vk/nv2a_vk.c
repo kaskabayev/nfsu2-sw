@@ -124,9 +124,12 @@ static SDL_Window    *s_win;
 /* iOS: UIKit windows must be created on the app main thread. The renderer's
  * lazy init runs on the emulation thread, so main.c creates the window early
  * and hands it over; ready() then skips its own window creation. */
+static int s_window_required;
+
 void nv2a_vk_set_window(void *win)
 {
     s_win = (SDL_Window *)win;
+    s_window_required = 1;      /* main.c decided the window question already */
     if (s_win)
         s_headless = 0;
 }
@@ -1543,9 +1546,17 @@ static VkProg *prog_get(const Nv2aRawBatch *b, const Nv2aPshKey *pk)
     return p;
 }
 
+static int s_dyn_vertex_input;
+/* Fallback when VK_EXT_vertex_input_dynamic_state is missing (MoltenVK):
+ * the draw's vertex layout is hashed into the pipeline key, and new
+ * pipelines carry the descriptions statically. */
+static uint32_t s_vlayout_hash;
+static VkVertexInputBindingDescription2EXT  s_vl_bind[NV2A_RAW_ATTRS];
+static VkVertexInputAttributeDescription2EXT s_vl_attr[NV2A_RAW_ATTRS];
+
 typedef struct {
     int      prog;
-    uint32_t blend, bsrc, bdst, beq, cmask, depth, topo;
+    uint32_t blend, bsrc, bdst, beq, cmask, depth, topo, vlayout;
 } PipeKey;
 
 typedef struct {
@@ -1614,12 +1625,12 @@ static VkBlendOp blend_op(uint32_t v)
 
 /* vkpipes.bin: the program by what generated it, and the pipeline's own
  * state. */
-#define PIPE_REC_MAGIC 0x4C504B56u              /* "VKPL" */
+#define PIPE_REC_MAGIC 0x4C504B57u              /* "VKPW" (v2: +vlayout) */
 typedef struct {
     uint32_t   magic, pad;
     uint64_t   vkey;
     Nv2aPshKey pk;
-    uint32_t   blend, bsrc, bdst, beq, cmask, depth, topo;
+    uint32_t   blend, bsrc, bdst, beq, cmask, depth, topo, vlayout;
 } PipeRec;
 static uint32_t s_pipes_unsaved;
 
@@ -1635,7 +1646,7 @@ static void pipe_rec_append(const PipeKey *k)
     rec.vkey = s_prog[k->prog].vkey;
     rec.pk = s_prog[k->prog].pkey;
     rec.blend = k->blend; rec.bsrc = k->bsrc; rec.bdst = k->bdst; rec.beq = k->beq;
-    rec.cmask = k->cmask; rec.depth = k->depth; rec.topo = k->topo;
+    rec.cmask = k->cmask; rec.depth = k->depth; rec.topo = k->topo; rec.vlayout = k->vlayout;
     if ((f = fopen(path, "ab"))) {
         fwrite(&rec, sizeof rec, 1, f);
         fclose(f);
@@ -1668,8 +1679,14 @@ static VkPipeline pipe_get(const PipeKey *k)
         VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY,
         VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
         VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE,
-        VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_VERTEX_INPUT_EXT,
+        VK_DYNAMIC_STATE_STENCIL_OP,
+#if 0
+        VK_DYNAMIC_STATE_VERTEX_INPUT_EXT,   /* only when the ext exists */
+#endif
     };
+    VkDynamicState dynbuf[16];
+    uint32_t ndyn = 0;
+    (void)dynbuf;
     VkPipeline pipe = VK_NULL_HANDLE;
     VkProg *p = &s_prog[k->prog];
 
@@ -1705,8 +1722,23 @@ static VkPipeline pipe_get(const PipeKey *k)
     ba.colorWriteMask = k->cmask;
     cb.attachmentCount = 1;
     cb.pAttachments = &ba;
-    dy.dynamicStateCount = (uint32_t)(sizeof dyn / sizeof dyn[0]);
-    dy.pDynamicStates = dyn;
+    {
+        static const VkDynamicState base[] = {
+            VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+            VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
+            VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_CULL_MODE,
+            VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY,
+            VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+            VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE,
+            VK_DYNAMIC_STATE_STENCIL_OP,
+        };
+        for (uint32_t di2 = 0; di2 < sizeof base / sizeof base[0]; di2++)
+            dynbuf[ndyn++] = base[di2];
+        if (s_dyn_vertex_input)
+            dynbuf[ndyn++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
+        dy.dynamicStateCount = ndyn;
+        dy.pDynamicStates = dynbuf;
+    }
     rci.colorAttachmentCount = 1;
     rci.pColorAttachmentFormats = &cfmt;
     if (k->depth) {
@@ -1716,6 +1748,25 @@ static VkPipeline pipe_get(const PipeKey *k)
     ci.pNext = &rci;
     ci.stageCount = 2;
     ci.pStages = st;
+    if (!s_dyn_vertex_input) {
+        /* No vertex-input dynamic state (MoltenVK): bake this draw's layout
+         * into the pipeline. s_vl_* were filled by the draw before pipe_get. */
+        static VkVertexInputBindingDescription  b32[NV2A_RAW_ATTRS];
+        static VkVertexInputAttributeDescription a32[NV2A_RAW_ATTRS];
+        for (uint32_t bi = 0; bi < NV2A_RAW_ATTRS; bi++) {
+            b32[bi].binding  = s_vl_bind[bi].binding;
+            b32[bi].stride   = s_vl_bind[bi].stride;
+            b32[bi].inputRate = s_vl_bind[bi].inputRate;
+            a32[bi].location = s_vl_attr[bi].location;
+            a32[bi].binding  = s_vl_attr[bi].binding;
+            a32[bi].format   = s_vl_attr[bi].format;
+            a32[bi].offset   = 0;
+        }
+        vi.vertexBindingDescriptionCount   = NV2A_RAW_ATTRS;
+        vi.pVertexBindingDescriptions      = b32;
+        vi.vertexAttributeDescriptionCount = NV2A_RAW_ATTRS;
+        vi.pVertexAttributeDescriptions    = a32;
+    }
     ci.pVertexInputState = &vi;
     ci.pInputAssemblyState = &ia;
     ci.pViewportState = &vp;
@@ -1977,6 +2028,11 @@ static int ready_impl(void)
                 iext[niext++] = names[i];
             fprintf(stderr, "[VKINIT] window injected, %u exts\n", ne);
             fflush(stderr);
+        } else if (s_window_required) {
+            /* main.c created (or tried to create) the window on the main
+             * thread; retrying off-main is the exact v23 crash. */
+            fprintf(stderr, "[VKINIT] no window from main; going headless\n"); fflush(stderr);
+            s_headless = 1;
         } else if (!s_headless) {
             fprintf(stderr, "[VKINIT] SDL video init\n"); fflush(stderr);
             if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
@@ -2101,7 +2157,8 @@ static int ready_impl(void)
     qci.queueCount = 1;
     qci.pQueuePriorities = &prio;
     f13.dynamicRendering = VK_TRUE;
-    fvi.vertexInputDynamicState = VK_TRUE;
+    if (s_dyn_vertex_input)
+        fvi.vertexInputDynamicState = VK_TRUE;
     feds.extendedDynamicState = VK_TRUE;
     f13.pNext = &fvi;
     f2.pNext = &f13;
@@ -2110,7 +2167,26 @@ static int ready_impl(void)
     if (!s_headless)
         dext[ndext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     dext[ndext++] = VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME;
-    dext[ndext++] = VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME;
+    {
+        /* MoltenVK lacks VK_EXT_vertex_input_dynamic_state (as of 1.4.2):
+         * request it only when the device really has it; otherwise the
+         * renderer falls back to pipelines keyed per vertex layout. */
+        uint32_t nd = 0;
+        vkEnumerateDeviceExtensionProperties(s_pd, NULL, &nd, NULL);
+        if (nd) {
+            VkExtensionProperties props[64];
+            uint32_t nq = nd < 64 ? nd : 64;
+            vkEnumerateDeviceExtensionProperties(s_pd, NULL, &nq, props);
+            for (uint32_t di = 0; di < nq; di++)
+                if (!strcmp(props[di].extensionName,
+                            VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME))
+                    s_dyn_vertex_input = 1;
+        }
+        fprintf(stderr, "[VKINIT] dynamic vertex input: %s\n",
+                s_dyn_vertex_input ? "yes" : "NO - per-layout pipelines"); fflush(stderr);
+        if (s_dyn_vertex_input)
+            dext[ndext++] = VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME;
+    }
     dci.pNext = &f2;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
@@ -2124,7 +2200,8 @@ static int ready_impl(void)
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
 #define GET(p, name) p = (void *)vkGetDeviceProcAddr(s_dev, name); if (!p) { LOGE("missing %s\n", name); return 0; }
     GET(p_push_desc, "vkCmdPushDescriptorSetKHR");
-    GET(p_vertex_input, "vkCmdSetVertexInputEXT");
+    if (s_dyn_vertex_input)
+        GET(p_vertex_input, "vkCmdSetVertexInputEXT");
     GET(p_begin_rendering, "vkCmdBeginRendering");
     GET(p_end_rendering, "vkCmdEndRendering");
     GET(p_cull_mode, "vkCmdSetCullMode");
@@ -2553,6 +2630,60 @@ static void attr_to_float4(const Nv2aRawBatch *b, uint32_t a, uint32_t v, float 
     }
 }
 
+/* Compute this batch's vertex layout into s_vl_*; hash it for the pipeline
+ * key. Called from the draw before pipe selection (the layout is part of the
+ * pipeline when the vertex-input dynamic state is unavailable). */
+static void pipe_vertex_layout(const Nv2aRawBatch *b)
+{
+    uint32_t a, i, np = 0;
+    uint16_t direct = 0, conv;
+    VkFormat fmt[NV2A_RAW_ATTRS];
+    uint32_t slot[NV2A_RAW_ATTRS];
+    const uint32_t *w;
+    uint32_t h = 2166136261u;
+
+    for (a = 0; a < NV2A_RAW_ATTRS; a++) {
+        memset(&s_vl_bind[a], 0, sizeof s_vl_bind[a]);
+        memset(&s_vl_attr[a], 0, sizeof s_vl_attr[a]);
+        fmt[a] = VK_FORMAT_UNDEFINED;
+        if (!(b->attr_direct & (1u << a)))
+            continue;
+        fmt[a] = vertex_format(b->direct[a].type, b->direct[a].size);
+        if (fmt[a] != VK_FORMAT_UNDEFINED)
+            direct |= (uint16_t)(1u << a);
+    }
+    conv = b->attr_present & (uint16_t)~direct;
+    for (a = 0; a < NV2A_RAW_ATTRS; a++) {
+        s_vl_bind[a].sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT;
+        s_vl_bind[a].binding = a;
+        s_vl_bind[a].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        s_vl_bind[a].divisor = 1;
+        s_vl_attr[a].sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT;
+        s_vl_attr[a].location = a;
+        s_vl_attr[a].binding = a;
+        if (direct & (1u << a)) {
+            s_vl_bind[a].stride = b->direct[a].stride;
+            s_vl_attr[a].format = fmt[a];
+        } else if (conv & (1u << a)) {
+            slot[np++] = a;
+            s_vl_bind[a].stride = 0;      /* patched after the loop */
+            s_vl_attr[a].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        } else {
+            s_vl_bind[a].stride = 0;
+            s_vl_attr[a].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        }
+    }
+    for (i = 0; i < np; i++)
+        s_vl_bind[slot[i]].stride = np * 16;
+    w = (const uint32_t *)s_vl_bind;
+    for (a = 0; a < NV2A_RAW_ATTRS * (uint32_t)(sizeof s_vl_bind[0] / 4); a++)
+        h = (h ^ w[a]) * 16777619u;
+    w = (const uint32_t *)s_vl_attr;
+    for (a = 0; a < NV2A_RAW_ATTRS * (uint32_t)(sizeof s_vl_attr[0] / 4); a++)
+        h = (h ^ w[a]) * 16777619u;
+    s_vlayout_hash = h | 1u;
+}
+
 static int upload_vertices(const Nv2aRawBatch *b)
 {
     VRun run[NV2A_RAW_ATTRS];
@@ -2614,33 +2745,23 @@ static int upload_vertices(const Nv2aRawBatch *b)
     memcpy(dst + const_at, b->attr_const, NV2A_RAW_ATTRS * 16);
 
     for (a = 0; a < NV2A_RAW_ATTRS; a++) {
-        memset(&bind[a], 0, sizeof bind[a]);
-        memset(&attr[a], 0, sizeof attr[a]);
-        bind[a].sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT;
-        bind[a].binding = a;
-        bind[a].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-        bind[a].divisor = 1;
-        attr[a].sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT;
-        attr[a].location = a;
-        attr[a].binding = a;
+        /* Layout was computed by pipe_vertex_layout() for the pipeline key;
+         * copy it and add this batch's buffer offsets. */
+        bind[a] = s_vl_bind[a];
+        attr[a] = s_vl_attr[a];
         bufs[a] = s_f->ring;
         if (direct & (1u << a)) {
-            bind[a].stride = b->direct[a].stride;
-            attr[a].format = fmt[a];
             offs[a] = at + run[of_run[a]].at + (VkDeviceSize)(b->direct[a].ptr - run[of_run[a]].lo);
         } else if (conv & (1u << a)) {
             for (i = 0; i < np && slot[i] != a; i++) { }
-            bind[a].stride = np * 16;
-            attr[a].format = VK_FORMAT_R32G32B32A32_SFLOAT;
             offs[a] = at + pack_at + i * 16;
         } else {
             /* Absent: the title's SET_VERTEX_DATA* value, stride 0. */
-            bind[a].stride = 0;
-            attr[a].format = VK_FORMAT_R32G32B32A32_SFLOAT;
             offs[a] = at + const_at + a * 16;
         }
     }
-    p_vertex_input(s_cb, NV2A_RAW_ATTRS, bind, NV2A_RAW_ATTRS, attr);
+    if (s_dyn_vertex_input)
+        p_vertex_input(s_cb, NV2A_RAW_ATTRS, bind, NV2A_RAW_ATTRS, attr);
     vkCmdBindVertexBuffers(s_cb, 0, NV2A_RAW_ATTRS, bufs, offs);
     return 1;
 }
@@ -2938,6 +3059,9 @@ static void vk_draw_raw(const Nv2aRawBatch *b)
     }
     key.depth = d != NULL;
     key.topo = cls;
+    if (!s_dyn_vertex_input)
+        pipe_vertex_layout(b);   /* fill s_vl_* + hash before the key is hashed */
+    key.vlayout = s_dyn_vertex_input ? 0 : s_vlayout_hash;
     pipe = pipe_get(&key);
     if (!pipe)
         return;

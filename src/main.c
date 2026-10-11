@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <signal.h>
 
 #include <xbox/xboxrecomp.h>
 
@@ -97,6 +98,8 @@ static void ios_crash_handler(int sig)
 int SDL_InitSubSystem(uint32_t flags);
 void *SDL_CreateWindow(const char *title, int x, int y, int w, int h, uint32_t flags);
 const char *SDL_GetError(void);
+union SDL_Event;
+int SDL_WaitEvent(union SDL_Event *event);
 #endif
 
 #if defined(__SWITCH__)
@@ -366,12 +369,77 @@ int main(int argc, char **argv)
     switch_shutdown();
     return rc;
 }
-#else
+#elif defined(NFSU2_IOS)
+#include <pthread.h>
+/* iOS: SDL renames main to SDL_main and calls it on the UIKit main thread.
+ * game_main blocks there forever, so the run loop never turns: no screen
+ * commit, no touch delivery, watchdog kills backgrounding. Mirror the
+ * Switch layout instead: the game runs on a big pthread and the main thread
+ * services SDL events. */
+static void *ios_game_thread(void *arg)
+{
+    *(int *)arg = game_main();
+    return NULL;
+}
+
 int main(int argc, char **argv)
 {
+    pthread_attr_t attr;
+    pthread_t th;
+    int rc = 1;
+
     (void)argc;
     (void)argv;
-    return game_main();
+    {
+        /* SA_ONSTACK: a guest-thread stack overflow must still reach the
+         * handler (plain signal() would die on the overflowed stack). */
+        struct sigaction sa;
+        static char crash_stack[SIGSTKSZ * 4];
+        stack_t ss;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_handler = ios_crash_handler;
+        sa.sa_flags = SA_ONSTACK;
+        sigaction(SIGSEGV, &sa, NULL);
+        sigaction(SIGBUS, &sa, NULL);
+        sigaction(SIGILL, &sa, NULL);
+        sigaction(SIGABRT, &sa, NULL);
+        ss.ss_sp = crash_stack;
+        ss.ss_size = sizeof crash_stack;
+        ss.ss_flags = 0;
+        sigaltstack(&ss, NULL);
+    }
+    {
+        extern void nv2a_vk_set_window(void *win);
+        SDL_InitSubSystem(SDL_INIT_VIDEO);
+        fprintf(stderr, "nfsu2: creating SDL window on main thread\n");
+        void *win = SDL_CreateWindow("NFSU2", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                     1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+        fprintf(stderr, "nfsu2: window=%p (%s)\n", win, win ? "ok" : SDL_GetError());
+        nv2a_vk_set_window(win);
+        if (!win)
+            fprintf(stderr, "nfsu2: FATAL no window; refusing off-main fallback\n");
+        else {
+            extern int nv2a_vk_init_on_main(void);
+            fprintf(stderr, "nfsu2: eager renderer init on main thread\n");
+            int ok = nv2a_vk_init_on_main();
+            fprintf(stderr, "nfsu2: eager init %s\n", ok ? "ok" : "FAILED (headless)");
+        }
+    }
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 16u * 1024 * 1024);
+    if (pthread_create(&th, &attr, ios_game_thread, &rc) == 0) {
+        SDL_Event ev;
+        for (;;) {
+            /* Blocks; also keeps the SDL/UIKit state serviced. */
+            if (!SDL_WaitEvent(&ev))
+                break;
+            /* Events are consumed by the touch watch; nothing else. */
+        }
+        pthread_join(th, NULL);
+    } else {
+        fprintf(stderr, "[FATAL] cannot start the game thread\n");
+    }
+    return rc;
 }
 #endif
 
@@ -385,29 +453,7 @@ static int game_main(void)
 #ifdef NFSU2_IOS
     ios_log_to_documents();
     setvbuf(stderr, NULL, _IONBF, 0);
-    signal(SIGSEGV, ios_crash_handler);
-    signal(SIGBUS, ios_crash_handler);
-    signal(SIGILL, ios_crash_handler);
-    signal(SIGABRT, ios_crash_handler);
-    fprintf(stderr, "nfsu2: build v6 (main-thread window + renderer hook)\n");
-    {
-        extern void nv2a_vk_set_window(void *win);
-        SDL_InitSubSystem(SDL_INIT_VIDEO);
-        fprintf(stderr, "nfsu2: creating SDL window on main thread\n");
-        void *win = SDL_CreateWindow("NFSU2", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                     1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
-        fprintf(stderr, "nfsu2: window=%p (%s)\n", win, win ? "ok" : SDL_GetError());
-        nv2a_vk_set_window(win);
-        if (!win) {
-            fprintf(stderr, "nfsu2: FATAL no window; refusing off-main fallback\n");
-        }
-        if (win) {
-            extern int nv2a_vk_init_on_main(void);
-            fprintf(stderr, "nfsu2: eager renderer init on main thread\n");
-            int ok = nv2a_vk_init_on_main();
-            fprintf(stderr, "nfsu2: eager init %s\n", ok ? "ok" : "FAILED (headless)");
-        }
-    }
+    fprintf(stderr, "nfsu2: build v7 (per-layout pipelines + main runloop thread)\n");
     fprintf(stderr, "nfsu2: HOME=%s CFFIXED_USER_HOME=%s TMPDIR=%s\n",
             getenv("HOME") ? getenv("HOME") : "(unset)",
             getenv("CFFIXED_USER_HOME") ? getenv("CFFIXED_USER_HOME") : "(unset)",
