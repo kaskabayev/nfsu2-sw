@@ -121,7 +121,7 @@ int SDL_GetWindowWMInfo(void *window, struct sdl_syswm_info *info);
 #define SDL_HINT_ORIENTATIONS "SDL_IOS_ORIENTATIONS"
 #define SDL_WINDOWEVENT 0x200
 #define SDL_QUIT 0x100
-#define SDL_SYSWM_UIKIT 4
+#define SDL_SYSWM_UIKIT 5   /* SDL_syswm.h: UNKNOWN0 WINDOWS1 X11-2 DIRECTFB3 COCOA4 UIKIT5 */
 #define SDL_APP_WILLENTERBACKGROUND 0x103
 #define SDL_APP_DIDENTERFOREGROUND 0x106
 /* SDL_WindowEvent: type, timestamp, windowID, event, padding, data1, data2 */
