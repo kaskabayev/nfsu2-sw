@@ -2416,7 +2416,23 @@ BOOL UnmapViewOfFile(LPCVOID baseAddr)
  * memfd_create for this; elsewhere an immediately-unlinked temp file does. */
 static int anon_map_fd(const char *name)
 {
-#if defined(__APPLE__)
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    /* iOS: shm_open is unreliable in the app sandbox here; back the mapping
+     * with a real file in a writable cache dir instead. Same aliasing
+     * semantics via MAP_SHARED views. */
+    {
+        static volatile LONG map_counter = 0;
+        char path[1024];
+        LONG seq = InterlockedIncrement(&map_counter);
+        const char *dir = getenv("TMPDIR");
+        if (!dir || !dir[0]) dir = "/tmp";
+        snprintf(path, sizeof(path), "%s/%s_%ld",
+                 dir, name ? name : "xbox_map", (long)seq);
+        int fd = open(path, O_CREAT | O_RDWR | O_EXCL, 0600);
+        if (fd >= 0) unlink(path);   /* mapping outlives the name */
+        return fd;
+    }
+#elif defined(__APPLE__)
     static volatile LONG map_counter = 0;
     char shm_name[32];
     LONG seq = InterlockedIncrement(&map_counter);
