@@ -1598,7 +1598,7 @@ static int gamma_lut_active(void)
     const char *off = getenv("NFSU2_LUT");   /* kill switch: 0 = always blit */
     if (off && strcmp(off, "0") == 0)
         return 0;
-    if (__atomic_load_n(&g_nfsu2_gamma_gen, __ATOMIC_RELAXED) == 0 &&
+    if (__atomic_load_n(&g_nfsu2_gamma_gen, __ATOMIC_ACQUIRE) == 0 &&
         gamma_user_k() == 1.0)
         return 0;
     return 1;
@@ -1608,7 +1608,7 @@ static int gamma_lut_active(void)
 static void gamma_lut_fill(void)
 {
     double k = gamma_user_k();
-    int have_ramp = __atomic_load_n(&g_nfsu2_gamma_gen, __ATOMIC_RELAXED) != 0;
+    int have_ramp = __atomic_load_n(&g_nfsu2_gamma_gen, __ATOMIC_ACQUIRE) != 0;
     memset(s_lut_words, 0, sizeof s_lut_words);
     for (int i = 0; i < 256; i++) {
         /* One curve: out = ramp(255 * pow(i/255, 1/k)); the 1/k exponent
@@ -1840,7 +1840,7 @@ static void gamma_ensure(VkSurf *s)
  * the flip's command buffer, before the correction draw. */
 static void gamma_upload_lut(void)
 {
-    uint32_t gen = __atomic_load_n(&g_nfsu2_gamma_gen, __ATOMIC_RELAXED);
+    uint32_t gen = __atomic_load_n(&g_nfsu2_gamma_gen, __ATOMIC_ACQUIRE);
     static double last_k = -1;
     double k = gamma_user_k();
     if (s_gamma_img_gen == (int)gen && last_k == k)
@@ -3481,6 +3481,18 @@ static void vk_draw_raw(const Nv2aRawBatch *b)
         return;
     s_drew_any = 1;
     psh_key(r, &pk);
+    {   /* NV097 depth bias (0x338/0x384/0x388): unimplemented in both
+         * renderers; a nonzero one-shot log says whether the game uses it
+         * for decals/shadows (Opus v21 item 4). */
+        static int bias_logged;
+        if (!bias_logged &&
+            (r[0x338 / 4] || r[0x384 / 4] || r[0x388 / 4])) {
+            bias_logged = 1;
+            fprintf(stderr,
+                    "[DEPTH-BIAS] set: 0x%X 0x%X 0x%X (ignored)\n",
+                    r[0x338 / 4], r[0x384 / 4], r[0x388 / 4]);
+        }
+    }
     {
         uint32_t made = s_prog_made;
         uint64_t t0 = hz_now();
@@ -3571,7 +3583,24 @@ static void vk_draw_raw(const Nv2aRawBatch *b)
         vb->surf[0] = 2.0f / (float)s->w;
         vb->surf[1] = 2.0f / (float)s->h;
         vb->surf[2] = 1.0f / (float)zmax_of(r);
-        vb->surf[3] = 0.5f - 0.5f * (float)s->w / (float)s->pw; /* see nv2a_snap */
+        /* see nv2a_snap: the 0.25-title-pixel shift at scale 2 puts every
+         * second real pixel row/col ON a texel border (seams, half-dark
+         * edges). NFSU2_SNAP_SHIFT scales the shift: 0 = off (A/B), 1 =
+         * the behaviour since 2026-10-05. */
+        {
+            static double snap_k;
+            static int snap_init;
+            if (!snap_init) {
+                const char *e = getenv("NFSU2_SNAP_SHIFT");
+                snap_k = e ? strtod(e, NULL) : 1.0;
+                if (!(snap_k >= 0.0) || snap_k > 1.0)
+                    snap_k = 1.0;
+                snap_init = 1;
+                if (snap_k != 1.0)
+                    fprintf(stderr, "[SNAP] shift scaled to %.2fx\n", snap_k);
+            }
+            vb->surf[3] = (float)((0.5 - 0.5 * (double)s->w / (double)s->pw) * snap_k);
+        }
         memcpy(vb->m, b->composite, sizeof vb->m);
         memcpy(vb->vpoff, b->vp_offset, sizeof vb->vpoff);
         vb->aa[0] = b->aa_sx > 0 ? b->aa_sx : 1.0f;
@@ -3612,7 +3641,7 @@ static void vk_draw_raw(const Nv2aRawBatch *b)
         return;
     {
         VkDeviceSize iat;
-        if (b->vertex_count <= 65536) {
+        if (b->vertex_count < 65536) {
             uint16_t *o;
             iat = ring_alloc((VkDeviceSize)n * 2, 4, &map);
             o = (uint16_t *)map;

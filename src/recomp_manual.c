@@ -269,15 +269,14 @@ void sub_002F0D10(void)
 {
     uint32_t ramp = MEM32(esp + 4);
     const uint8_t *r = (const uint8_t *)XBOX_PTR(ramp);
-    static uint32_t sum;
-    uint32_t s = 0;
-    for (int i = 0; i < 768; i++) {
-        g_nfsu2_gamma[i] = r[i];
-        s += r[i];
-    }
-    if (s != sum) {
-        sum = s;
-        g_nfsu2_gamma_gen++;
+    static uint8_t prev[768];
+    memcpy(g_nfsu2_gamma, r, 768);
+    if (memcmp(g_nfsu2_gamma, prev, 768) != 0) {
+        memcpy(prev, g_nfsu2_gamma, 768);
+        /* Release: the LUT bytes are visible before the generation number
+         * (ARM64 readers otherwise pick up a new gen with old bytes). */
+        __atomic_store_n(&g_nfsu2_gamma_gen, g_nfsu2_gamma_gen + 1,
+                         __ATOMIC_RELEASE);
         int ident = 1;
         for (int i = 0; i < 256 && ident; i++)
             if (g_nfsu2_gamma[i] != i || g_nfsu2_gamma[256 + i] != i ||

@@ -255,6 +255,8 @@ int nv2a_gl_vsh_program(const uint32_t (*prog)[4], uint32_t slots,
  * uniforms in a std140 block (binding 0) and Vulkan's 0..1 clip depth. */
 static const char s_vk_prelude[] =
     "#version 450\n"
+    "invariant gl_Position;               /* same vertex, same position from\n"
+    "                                        every pipeline: no cracks */\n"
     "layout(location = 0) in vec4 v0;\n"
     "layout(location = 1) in vec4 v1;\n"
     "layout(location = 2) in vec4 v2;\n"
