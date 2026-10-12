@@ -1595,6 +1595,9 @@ static double gamma_user_k(void)
 
 static int gamma_lut_active(void)
 {
+    const char *off = getenv("NFSU2_LUT");   /* kill switch: 0 = always blit */
+    if (off && strcmp(off, "0") == 0)
+        return 0;
     if (__atomic_load_n(&g_nfsu2_gamma_gen, __ATOMIC_RELAXED) == 0 &&
         gamma_user_k() == 1.0)
         return 0;
@@ -1671,7 +1674,6 @@ static void gamma_ensure(VkSurf *s)
     if (s_lut_img && !s_gamma_dsl) {
         VkDescriptorSetLayoutBinding gb[2];
         VkDescriptorSetLayoutCreateInfo glci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-        VkPushConstantRange gpc;
         VkPipelineLayoutCreateInfo gli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
         memset(gb, 0, sizeof gb);
         gb[0].binding = 0;                   /* the present surface */
@@ -1680,17 +1682,19 @@ static void gamma_ensure(VkSurf *s)
         gb[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         gb[1] = gb[0];
         gb[1].binding = 1;                   /* the gamma LUT */
+        gb[2].binding = 2;                   /* the picture-rect UBO */
+        gb[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        gb[2].descriptorCount = 1;
+        gb[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         glci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
-        glci.bindingCount = 2;
+        glci.bindingCount = 3;
         glci.pBindings = gb;
         if (vkCreateDescriptorSetLayout(s_dev, &glci, NULL, &s_gamma_dsl) == VK_SUCCESS) {
-            gpc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            gpc.offset = 0;
-            gpc.size = 16;                   /* vec4: offset.xy, 1/extent.xy */
+            /* NO push constants: MoltenVK crashes binding implicit
+             * push-constant buffers at draw time (device-proven, v17).
+             * The rect rides a ring UBO instead, like the game's own. */
             gli.setLayoutCount = 1;
             gli.pSetLayouts = &s_gamma_dsl;
-            gli.pushConstantRangeCount = 1;
-            gli.pPushConstantRanges = &gpc;
             vkCreatePipelineLayout(s_dev, &gli, NULL, &s_gamma_layout);
         }
     }
@@ -1707,7 +1711,7 @@ static void gamma_ensure(VkSurf *s)
             "#version 450\n"
             "layout(binding = 0) uniform sampler2D u_surf;\n"
             "layout(binding = 1) uniform sampler1D u_lut;\n"
-            "layout(push_constant) uniform PC { vec4 u_rect; };  /* xy = picture offset, zw = 1/size */\n"
+            "layout(binding = 2) uniform Rect { vec4 u_rect; };  /* xy = offset, zw = 1/size */\n"
             "layout(location = 0) out vec4 o_col;\n"
             "void main() {\n"
             "  vec2 uv = (gl_FragCoord.xy - u_rect.xy) * u_rect.zw;\n"
@@ -3923,37 +3927,49 @@ static void vk_flip(void)
                         vkCmdSetViewport(s_cb, 0, 1, &gv);
                         vkCmdSetScissor(s_cb, 0, 1, &gs);
                         vkCmdBindPipeline(s_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s_gamma_pipe);
-                        /* Push descriptors: binding 2 = surface, 3 = LUT. */
+                        /* Push descriptors: 0 = surface, 1 = LUT, 2 = rect
+                         * UBO. Push constants crash MoltenVK's implicit
+                         * buffer binding (v17, device-proven) -- the rect
+                         * rides the ring like the game's own uniforms. */
+                        float rect[4] = { (float)dx, (float)dy,
+                                          1.0f / (float)dw, 1.0f / (float)dh };
+                        void *rmap;
+                        VkDeviceSize rat = ring_alloc(sizeof rect, s_ubo_align, &rmap);
+                        VkDescriptorBufferInfo dbi;
                         VkDescriptorImageInfo dii[2];
-                        VkWriteDescriptorSet w[2];
-                        memset(dii, 0, sizeof dii);
-                        memset(w, 0, sizeof w);
-                        dii[0].sampler = s_surf_sampler;
-                        dii[0].imageView = s->view;
-                        dii[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-                        dii[1].sampler = s_lut_sampler;
-                        dii[1].imageView = s_lut_view;
-                        dii[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-                        w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                        w[0].dstBinding = 2;
-                        w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                        w[0].descriptorCount = 1;
-                        w[0].pImageInfo = &dii[0];
-                        w[1] = w[0];
-                        w[1].dstBinding = 3;
-                        w[1].pImageInfo = &dii[1];
-                        /* stageFlags come from the layout's bindings. */
-                        p_push_desc(s_cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    s_gamma_layout ? s_gamma_layout : s_layout, 0, 2, w);
-                        {
-                            /* u_rect = picture offset xy, 1/extent zw. */
-                            float pc[4] = { (float)dx, (float)dy,
-                                            1.0f / (float)dw, 1.0f / (float)dh };
-                            vkCmdPushConstants(s_cb,
-                                               s_gamma_layout ? s_gamma_layout : s_layout,
-                                               VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
+                        VkWriteDescriptorSet w[3];
+                        if (rmap) {
+                            memcpy(rmap, rect, sizeof rect);
+                            memset(dii, 0, sizeof dii);
+                            memset(w, 0, sizeof w);
+                            dii[0].sampler = s_surf_sampler;
+                            dii[0].imageView = s->view;
+                            dii[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+                            dii[1].sampler = s_lut_sampler;
+                            dii[1].imageView = s_lut_view;
+                            dii[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+                            dbi.buffer = s_f->ring;
+                            dbi.offset = rat;
+                            dbi.range = sizeof rect;
+                            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                            w[0].dstBinding = 0;
+                            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                            w[0].descriptorCount = 1;
+                            w[0].pImageInfo = &dii[0];
+                            w[1] = w[0];
+                            w[1].dstBinding = 1;
+                            w[1].pImageInfo = &dii[1];
+                            w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                            w[2].dstBinding = 2;
+                            w[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                            w[2].descriptorCount = 1;
+                            w[2].pBufferInfo = &dbi;
+                            /* stageFlags come from the layout's bindings. */
+                            p_push_desc(s_cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        s_gamma_layout ? s_gamma_layout : s_layout,
+                                        0, 3, w);
                         }
-                        vkCmdDraw(s_cb, 3, 1, 0, 0);
+                        vkCmdDraw(s_cb, rmap ? 3 : 0, 1, 0, 0);
                         end_rendering();
                         gb.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
                         gb.dstAccessMask = 0;
