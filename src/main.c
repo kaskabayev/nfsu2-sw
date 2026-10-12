@@ -126,6 +126,10 @@ static void cfg_load(const char *path)
         *nl = 0;
         snprintf(s_cfg[s_cfg_n].key, sizeof s_cfg[0].key, "%s", line);
         snprintf(s_cfg[s_cfg_n].val, sizeof s_cfg[0].val, "%s", eq + 1);
+        /* Same contract as the Switch's nfsu2x_env.txt: every line is also
+         * exported to the environment so renderer/game switches
+         * (RECOMP_PRESENT_INTERVAL, RECOMP_GL_SCALE, ...) read it. */
+        setenv(s_cfg[s_cfg_n].key, s_cfg[s_cfg_n].val, 0);
         s_cfg_n++;
     }
     fclose(f);
