@@ -361,6 +361,34 @@ void sub_002E8F20(void)
     esp += 4 + 8;                           /* return address, 2 stdcall args */
 }
 
+/* ── D3D device Reset interval patch (0x000A39F0) ────────────
+ *
+ * The title caps races at 30 fps by Resetting the device with present
+ * interval 0x80000002 (every second vblank, flip at once when late); the
+ * front end gets every-vblank. Reset copies the interval into the D3D
+ * global 0x2F76FC, which every Swap packs into the flip trap. The sim is
+ * timer-based (QueryPerformanceCounter -> 1/3600 s ticks), so flipping
+ * every vblank gives 60 fps at the same game speed -- when a frame fits
+ * in 16.7 ms. RECOMP_PRESENT_INTERVAL=1 rewrites the race interval after
+ * every Reset. */
+extern void sub_000A39F0_gen(void);
+
+void sub_000A39F0(void)
+{
+    static int want60 = -1;
+    if (want60 < 0) {
+        const char *e = getenv("RECOMP_PRESENT_INTERVAL");
+        want60 = (e && strcmp(e, "1") == 0);
+        if (want60)
+            fprintf(stderr, "[FPS] RECOMP_PRESENT_INTERVAL=1: races flip every vblank\n");
+    }
+    sub_000A39F0_gen();
+    if (want60 && MEM32(0x2F76FCu) == 0x80000002u) {
+        MEM32(0x2F76FCu) = 0x80000001u;
+        fprintf(stderr, "[FPS] present interval -> every vblank\n");
+    }
+}
+
 /* ── D3D interrupt handlers at DISPATCH_LEVEL ────────────────
  *
  * D3D services the GPU from its DPC (0x002F2530) and, with the interrupt
