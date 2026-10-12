@@ -103,7 +103,8 @@ const char *SDL_GetError(void);
 int SDL_WaitEvent(void *event);
 void SDL_RaiseWindow(void *window);
 /* Settings: Documents/nfsu2_env.txt, KEY=VALUE (Switch nfsu2x_env.txt format). */
-static struct { char key[32]; char val[64]; } s_cfg[16];
+static struct { char key[32]; char val[64]; } s_cfg[64];   /* 64: cfg_load
+ * reads up to 64 lines; a 17th line used to overflow the 16-entry array */
 static int s_cfg_n;
 static const char *cfg_get(const char *k)
 {
@@ -469,6 +470,10 @@ int main(int argc, char **argv)
 }
 #elif defined(NFSU2_IOS)
 #include <pthread.h>
+#if defined(__APPLE__)
+#include <pthread/qos.h>
+#define NFSU2_HAS_QOS 1
+#endif
 /* iOS: SDL renames main to SDL_main and calls it on the UIKit main thread.
  * game_main blocks there forever, so the run loop never turns: no screen
  * commit, no touch delivery, watchdog kills backgrounding. Mirror the
@@ -476,6 +481,13 @@ int main(int argc, char **argv)
  * services SDL events. */
 static void *ios_game_thread(void *arg)
 {
+#if defined(NFSU2_HAS_QOS)
+    const char *q = getenv("RECOMP_QOS");
+    if (!q || strcmp(q, "0") != 0) {     /* default on, RECOMP_QOS=0 off */
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+        fprintf(stderr, "[QOS] game thread -> user interactive\n");
+    }
+#endif
     *(int *)arg = game_main();
     return NULL;
 }
@@ -507,7 +519,7 @@ int main(int argc, char **argv)
     /* Redirect the log FIRST so main-thread init output is captured. */
     ios_log_to_documents();
     setvbuf(stderr, NULL, _IONBF, 0);
-    fprintf(stderr, "nfsu2: build v18 (60fps interval, gamma LUT pass, overlay, caches)\n");
+    fprintf(stderr, "nfsu2: build v20 (-O2 release, scale 2, QoS, stick visuals, overlay polish)\n");
     fprintf(stderr, "nfsu2: HOME=%s TMPDIR=%s\n",
             getenv("CFFIXED_USER_HOME") ? getenv("CFFIXED_USER_HOME") : "(unset)",
             getenv("TMPDIR") ? getenv("TMPDIR") : "(unset)");
@@ -559,6 +571,11 @@ int main(int argc, char **argv)
                     char cfgp[1100];
                     snprintf(cfgp, sizeof cfgp, "%s/nfsu2_env.txt", gd && gd[0] ? gd : docs);
                     cfg_load(cfgp);
+                    /* Default render scale 2 on iOS (A17 has the fill rate;
+                     * 480p upscaled looks soft). cfg_load's setenv bridge
+                     * ran first, so an explicit key always wins. */
+                    if (!getenv("RECOMP_GL_SCALE"))
+                        setenv("RECOMP_GL_SCALE", "2", 0);
                     fprintf(stderr, "nfsu2: cwd %s (caches persist)\n",
                             gd && gd[0] ? gd : docs);
                 }
@@ -673,7 +690,7 @@ static int game_main(void)
 #ifdef NFSU2_IOS
     ios_log_to_documents();
     setvbuf(stderr, NULL, _IONBF, 0);
-    fprintf(stderr, "nfsu2: build v18 (60fps interval, gamma LUT pass, overlay, caches)\n");
+    fprintf(stderr, "nfsu2: build v20 (-O2 release, scale 2, QoS, stick visuals, overlay polish)\n");
     fprintf(stderr, "nfsu2: HOME=%s CFFIXED_USER_HOME=%s TMPDIR=%s\n",
             getenv("HOME") ? getenv("HOME") : "(unset)",
             getenv("CFFIXED_USER_HOME") ? getenv("CFFIXED_USER_HOME") : "(unset)",

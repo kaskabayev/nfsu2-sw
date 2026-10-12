@@ -1204,8 +1204,19 @@ static DWORD WINAPI nv2a_flag_thread(LPVOID param)
     return 0;
 }
 
+#if defined(NFSU2_IOS) && defined(__APPLE__)
+#include <pthread/qos.h>
+#endif
+
 static DWORD WINAPI nv2a_ack_thread(LPVOID param)
 {
+#if defined(NFSU2_IOS) && defined(__APPLE__)
+    {
+        const char *q = getenv("RECOMP_QOS");
+        if (!q || strcmp(q, "0") != 0)   /* same gate as the game thread */
+            pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    }
+#endif
     volatile uint32_t *regs = (volatile uint32_t *)param;
     while (!InterlockedCompareExchange(&g_nv2a_ack_stop, 0, 0)) {
         nv2a_ack_flags(regs);

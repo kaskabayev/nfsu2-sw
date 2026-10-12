@@ -2213,6 +2213,7 @@ static void pcache_save(void)
     size_t n = 0;
     void *d;
     FILE *f;
+    s_pipes_unsaved = 0;                 /* attempted is attempted */
     if (!s_pcache || !cache_path(path, sizeof path, "vkpipecache.bin"))
         return;
     if (vkGetPipelineCacheData(s_dev, s_pcache, &n, NULL) != VK_SUCCESS || !n)
@@ -3992,7 +3993,12 @@ static void vk_flip(void)
     }
     /* iOS: a backgrounded app may not submit GPU work at all. Park here
      * (renderer thread) until the app is foreground again; the guest's
-     * vblank pacing simply stops for that time. */
+     * vblank pacing simply stops for that time. Save the pipeline cache
+     * once on the way in: this is the moment I/O is free. */
+    if (nfsu2_ios_background() && s_pipes_unsaved) {
+        pcache_save();
+        s_pipes_unsaved = 0;
+    }
     while (nfsu2_ios_background()) {
         struct timespec ts = { 0, 20 * 1000 * 1000 };
         nanosleep(&ts, NULL);
@@ -4031,7 +4037,9 @@ static void vk_flip(void)
     {
         static uint64_t last_save;
         uint64_t now = hz_now();
-        if (s_pipes_unsaved && now - last_save > 20000000000ull) {
+        /* Every 300 s, not 20: a save is file I/O on the render thread,
+         * mid-race hitches were measurable. Background + prewarm save too. */
+        if (s_pipes_unsaved && now - last_save > 300000000000ull) {
             last_save = now;
             pcache_save();
         }

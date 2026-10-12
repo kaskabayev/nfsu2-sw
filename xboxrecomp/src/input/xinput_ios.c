@@ -469,4 +469,43 @@ const XBOX_IOS_TOUCH_ZONE *xbox_ios_touch_zones(int *count)
     return s_zones;
 }
 
+/* Live stick state for the overlay's floating-stick visual: the touch-down
+ * point is the base ring, the current position the knob. side: 0 left,
+ * 1 right. Returns 1 while a finger drives that stick. */
+int xbox_ios_touch_stick(int side, float *bx, float *by, float *kx, float *ky)
+{
+    int role = side ? ROLE_RSTICK : ROLE_LSTICK;
+    int i, found = 0;
+
+    SDL_LockMutex(s_lock);
+    for (i = 0; i < TOUCH_MAX_FINGERS; i++) {
+        if (s_finger[i].id >= 0 && s_finger[i].role == role) {
+            *bx = s_finger[i].sx;
+            *by = s_finger[i].sy;
+            *kx = s_finger[i].x;
+            *ky = s_finger[i].y;
+            found = 1;
+            break;
+        }
+    }
+    SDL_UnlockMutex(s_lock);
+    return found;
+}
+
+/* Whether any finger is on zone idx (table order): pressed highlight. */
+int xbox_ios_touch_zone_pressed(int idx)
+{
+    int i, hit = 0;
+
+    SDL_LockMutex(s_lock);
+    for (i = 0; i < TOUCH_MAX_FINGERS; i++)
+        if (s_finger[i].id >= 0 && s_finger[i].role >= ROLE_ZONE(0) &&
+            s_finger[i].role - ROLE_ZONE(0) == idx) {
+            hit = 1;
+            break;
+        }
+    SDL_UnlockMutex(s_lock);
+    return hit;
+}
+
 #endif /* NFSU2_IOS */

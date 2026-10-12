@@ -15,6 +15,8 @@ typedef struct XBOX_IOS_TOUCH_ZONE_MIRROR {
     int   kind, value;
 } XBOX_IOS_TOUCH_ZONE_MIRROR;
 extern const void *xbox_ios_touch_zones(int *count);
+extern int xbox_ios_touch_stick(int side, float *bx, float *by, float *kx, float *ky);
+extern int xbox_ios_touch_zone_pressed(int idx);
 extern int nv2a_vk_fps_x10(void);
 
 /* Settings (Documents/nfsu2_env.txt, loaded in main.c; changed live by the
@@ -91,8 +93,9 @@ static Nfsu2GearTarget *s_target;
                               (z[i].cy - z[i].ry) * H,
                               z[i].rx * 2 * W,
                               z[i].ry * 2 * H);
-        CGContextSetRGBFillColor(c, 1, 1, 1, 0.16);
-        CGContextSetRGBStrokeColor(c, 1, 1, 1, 0.85);
+        int pressed = xbox_ios_touch_zone_pressed(i);
+        CGContextSetRGBFillColor(c, 1, 1, 1, pressed ? 0.42 : 0.16);
+        CGContextSetRGBStrokeColor(c, 1, 1, 1, pressed ? 1.0 : 0.85);
         CGContextSetLineWidth(c, 1.5);
         CGPathRef p = CGPathCreateWithEllipseInRect(r, NULL);
         CGContextAddPath(c, p);
@@ -112,6 +115,40 @@ static Nfsu2GearTarget *s_target;
                                          z[i].cy * H - sz.height / 2)
               withAttributes:attrs];
         }
+    }
+
+    /* The sticks: dynamic (the touch-down point is the centre), so the
+     * visual floats under the thumb - base ring at the down point, knob
+     * at the finger, clamped to full deflection (0.12 of the width). */
+    for (int side = 0; side < 2; side++) {
+        float bx, by, kx, ky;
+        if (!xbox_ios_touch_stick(side, &bx, &by, &kx, &ky))
+            continue;
+        CGFloat R = 0.12f * W;
+        CGPoint base = CGPointMake(bx * W, by * H);
+        CGPoint knob = CGPointMake(kx * W, ky * H);
+        CGFloat vx = knob.x - base.x, vy = knob.y - base.y;
+        CGFloat d = sqrt(vx * vx + vy * vy);
+        if (d > R) {
+            knob.x = base.x + vx / d * R;
+            knob.y = base.y + vy / d * R;
+        }
+        CGRect ring = CGRectMake(base.x - R, base.y - R, 2 * R, 2 * R);
+        CGContextSetRGBFillColor(c, 1, 1, 1, 0.10);
+        CGContextSetRGBStrokeColor(c, 1, 1, 1, 0.55);
+        CGContextSetLineWidth(c, 1.5);
+        CGPathRef rp = CGPathCreateWithEllipseInRect(ring, NULL);
+        CGContextAddPath(c, rp);
+        CGContextDrawPath(c, kCGPathFillStroke);
+        CGPathRelease(rp);
+        CGFloat kr = R * 0.42f;
+        CGRect knobR = CGRectMake(knob.x - kr, knob.y - kr, 2 * kr, 2 * kr);
+        CGContextSetRGBFillColor(c, 1, 1, 1, 0.38);
+        CGContextSetRGBStrokeColor(c, 1, 1, 1, 0.95);
+        CGPathRef kp = CGPathCreateWithEllipseInRect(knobR, NULL);
+        CGContextAddPath(c, kp);
+        CGContextDrawPath(c, kCGPathFillStroke);
+        CGPathRelease(kp);
     }
 }
 
@@ -205,6 +242,30 @@ static void build_panel(void)
 {
     s_panel.hidden = !s_panel.hidden;
 }
+- (void)stickTick
+{
+    /* Poll the touch state at 30 fps: redraw only when something the
+     * overlay draws actually changed (a stick moved or a zone pressed).
+     * Idle frames cost two lock-protected scans - nothing. */
+    static int s_sig;
+    int sig = 0;
+    float bx, by, kx, ky;
+    if (xbox_ios_touch_stick(0, &bx, &by, &kx, &ky))
+        sig |= 1 | (int)((kx * 96.0f) + 96) | ((int)((ky * 96.0f) + 96) << 8);
+    if (xbox_ios_touch_stick(1, &bx, &by, &kx, &ky))
+        sig |= 2 | ((int)((kx * 96.0f) + 96) << 16) | ((int)((ky * 96.0f) + 96) << 24);
+    int n = 0;
+    const void *zp = xbox_ios_touch_zones(&n);
+    (void)zp;
+    for (int i = 0; i < n; i++)
+        if (xbox_ios_touch_zone_pressed(i))
+            sig |= 0x10000 << (i % 15);
+    if (sig != s_sig) {
+        s_sig = sig;
+        [s_ov setNeedsDisplay];
+    }
+}
+
 - (void)fpsTick
 {
     if (!s_fps || s_fps.hidden)
@@ -214,9 +275,14 @@ static void build_panel(void)
 }
 @end
 
+static UIEdgeInsets s_safe;
+
+static CGFloat sa2left(void)  { return s_safe.left; }
+static CGFloat sa2top(void)   { return s_safe.top;  }
+
 static void build_fps_and_gear(void)
 {
-    s_fps = [[UILabel alloc] initWithFrame:CGRectMake(10, 8, 90, 24)];
+    s_fps = [[UILabel alloc] initWithFrame:CGRectMake(sa2left() + 10, sa2top() + 8, 90, 24)];
     s_fps.textColor = [UIColor colorWithWhite:1 alpha:0.9];
     s_fps.font = [UIFont monospacedDigitSystemFontOfSize:14 weight:UIFontWeightMedium];
     s_fps.hidden = nfsu2_cfg_show_fps() ? NO : YES;
@@ -227,6 +293,11 @@ static void build_fps_and_gear(void)
                                    selector:@selector(fpsTick)
                                    userInfo:nil
                                     repeats:YES];
+
+    CADisplayLink *dl = [CADisplayLink displayLinkWithTarget:s_target
+                                                    selector:@selector(stickTick)];
+    dl.preferredFramesPerSecond = 30;    /* touch visuals do not need 120 */
+    [dl addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
 }
 
 
@@ -251,8 +322,10 @@ void ios_touch_overlay_install(void *uiwindow)
     [win bringSubviewToFront:ov];
     s_ov = ov;
 
+    s_safe = win.safeAreaInsets;
+    UIEdgeInsets sa = s_safe;
     UIButton *gear = [UIButton buttonWithType:UIButtonTypeSystem];
-    gear.frame = CGRectMake(win.bounds.size.width / 2 - 20, 6, 40, 30);
+    gear.frame = CGRectMake(win.bounds.size.width / 2 - 22, sa.top + 4, 44, 44);
     [gear setTitle:@"..." forState:UIControlStateNormal];
     gear.titleLabel.font = [UIFont boldSystemFontOfSize:18];
     gear.tintColor = [UIColor colorWithWhite:1 alpha:0.8];
@@ -263,7 +336,7 @@ void ios_touch_overlay_install(void *uiwindow)
     build_panel();
     build_fps_and_gear();
     [ov setNeedsDisplay];
-    fprintf(stderr, "nfsu2: overlay frame %g x %g subviews %lu\\n",
+    fprintf(stderr, "nfsu2: overlay frame %g x %g subviews %lu\n",
             (double)ov.frame.size.width, (double)ov.frame.size.height,
             (unsigned long)ov.subviews.count);
 }
