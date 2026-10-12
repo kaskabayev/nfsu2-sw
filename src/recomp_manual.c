@@ -252,23 +252,20 @@ void sub_0009A250(void)
 }
 void sub_002A9450(void) { crt_memmove(); }
 
-#if !defined(__APPLE__)   /* Mach-O ld has no --wrap; probe is Linux-only */
 /* ── D3D_SetGammaRamp probe (0x002F0D10) ─────────────────────
  *
  * stdcall (ramp), ret 4: the D3D API the title uses to set the display
- * gamma. Off Windows the target NV2A MMIO bytes are plain guest RAM, so the
- * write is lost and the display keeps the identity ramp. Capture the ramp
- * here so the present path can apply it as a LUT (as xemu does), and log
- * whether it is non-identity once per change. The generated body still
- * runs (it must: D3D reads the ramp back through this memory). */
+ * gamma. Off Windows the target NV2A MMIO bytes are plain guest RAM, so
+ * the write is lost and the display keeps the identity ramp. Capture the
+ * ramp here so the present path can apply it as a LUT (as xemu does), and
+ * log whether it is non-identity once per change. The generated body
+ * (sub_002F0D10_gen) still runs: D3D reads the ramp back through this
+ * memory. */
 uint8_t g_nfsu2_gamma[768];
 uint32_t g_nfsu2_gamma_gen;
-extern void __real_sub_002F0D10(void);
+extern void sub_002F0D10_gen(void);
 
-/* Linked with -Wl,--wrap=sub_002F0D10 (see CMakeLists): every call to the
- * generated SetGammaRamp lands here first. The generated body keeps its
- * original name (__real_… under the wrap). */
-void __wrap_sub_002F0D10(void)
+void sub_002F0D10(void)
 {
     uint32_t ramp = MEM32(esp + 4);
     const uint8_t *r = (const uint8_t *)XBOX_PTR(ramp);
@@ -291,10 +288,8 @@ void __wrap_sub_002F0D10(void)
                 g_nfsu2_gamma[0], g_nfsu2_gamma[64], g_nfsu2_gamma[128],
                 g_nfsu2_gamma[192], g_nfsu2_gamma[255]);
     }
-    /* The generated body performs its own ret 4: no manual esp fixup. */
-    __real_sub_002F0D10();
+    sub_002F0D10_gen();
 }
-#endif  /* !__APPLE__ */
 
 /* ── D3D fence wait, D3D_BlockOnTime (0x002E8F20) ────────────
  *
@@ -361,32 +356,61 @@ void sub_002E8F20(void)
     esp += 4 + 8;                           /* return address, 2 stdcall args */
 }
 
-/* ── D3D device Reset interval patch (0x000A39F0) ────────────
+/* ── Swap present-interval forcing (0x002EB4B0 / 0x002EB6A0) ─
  *
- * The title caps races at 30 fps by Resetting the device with present
- * interval 0x80000002 (every second vblank, flip at once when late); the
- * front end gets every-vblank. Reset copies the interval into the D3D
- * global 0x2F76FC, which every Swap packs into the flip trap. The sim is
- * timer-based (QueryPerformanceCounter -> 1/3600 s ticks), so flipping
- * every vblank gives 60 fps at the same game speed -- when a frame fits
- * in 16.7 ms. RECOMP_PRESENT_INTERVAL=1 rewrites the race interval after
- * every Reset. */
-extern void sub_000A39F0_gen(void);
+ * The race 30-fps cap travels as a present interval (0x80000002 = every
+ * second vblank, or plain 2 depending on the EA D3D wrapper that wrote
+ * it) through D3D's global at 0x2F76FC into the two swap paths, one of
+ * which game code calls directly. Forcing it at the device Reset is not
+ * enough: Present saves/overrides/restores the value and the wrappers
+ * rewrite it. Catch it at the readers instead: rewrite every-vblank
+ * whenever RECOMP_PRESENT_INTERVAL=1. The sim is timer-based, so this
+ * does not change game speed. */
+extern void sub_002EB4B0_gen(void);
+extern void sub_002EB6A0_gen(void);
 
-void sub_000A39F0(void)
+static int swap_interval_wanted(void)
 {
-    static int want60 = -1;
-    if (want60 < 0) {
+    static int v = -1;
+    if (v < 0) {
         const char *e = getenv("RECOMP_PRESENT_INTERVAL");
-        want60 = (e && strcmp(e, "1") == 0);
-        if (want60)
-            fprintf(stderr, "[FPS] RECOMP_PRESENT_INTERVAL=1: races flip every vblank\n");
+        v = (e && strcmp(e, "1") == 0);
+        if (v)
+            fprintf(stderr, "[FPS] RECOMP_PRESENT_INTERVAL=1: swap flips every vblank\n");
     }
-    sub_000A39F0_gen();
-    if (want60 && MEM32(0x2F76FCu) == 0x80000002u) {
-        MEM32(0x2F76FCu) = 0x80000001u;
-        fprintf(stderr, "[FPS] present interval -> every vblank\n");
+    return v;
+}
+
+static void force_interval(uint32_t slot)
+{
+    static uint32_t last;
+    uint32_t cur = MEM32(slot);
+    uint32_t fixed = cur;
+    if (cur == 0x80000002u)
+        fixed = 0x80000001u;
+    else if (cur == 2u)
+        fixed = 1u;
+    if (fixed != cur) {
+        MEM32(slot) = fixed;
+        if (cur != last) {
+            last = cur;
+            fprintf(stderr, "[FPS] swap interval 0x%08X -> every vblank\n", cur);
+        }
     }
+}
+
+void sub_002EB4B0(void)
+{
+    if (swap_interval_wanted())
+        force_interval(0x2F76FCu);
+    sub_002EB4B0_gen();
+}
+
+void sub_002EB6A0(void)
+{
+    if (swap_interval_wanted())
+        force_interval(0x2F76FCu);
+    sub_002EB6A0_gen();
 }
 
 /* ── D3D interrupt handlers at DISPATCH_LEVEL ────────────────

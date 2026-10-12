@@ -202,10 +202,6 @@ if(IOS AND NOT NINTENDO_SWITCH)
         "-framework CoreGraphics" "-framework OpenGLES" "-framework CoreVideo")
 endif()
 
-# SetGammaRamp probe (non-Apple only): the gamma ramp the title uploads is
-# otherwise written into plain guest RAM (no PRMDIO off Windows) and lost.
-# Apple's ld has no --wrap, and the probe is diagnostic anyway.
-if(NOT APPLE)
-    target_link_options(${PROJECT_NAME} PRIVATE
-        "LINKER:--wrap=sub_002F0D10")
-endif()
+# The SetGammaRamp probe is a plain manual override now (sub_002F0D10 in
+# recomp_manual.c; tools.recomp renames the generated body to _gen) -- no
+# linker wrapping needed on any platform.

@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <errno.h>
 #include <signal.h>
 
 #include <xbox/xboxrecomp.h>
@@ -111,21 +112,39 @@ static const char *cfg_get(const char *k)
             return s_cfg[i].val;
     return NULL;
 }
+static char *cfg_trim(char *t)
+{
+    while (*t == ' ' || *t == '\t')
+        t++;
+    char *e = t + strlen(t);
+    while (e > t && (e[-1] == ' ' || e[-1] == '\t'))
+        *--e = 0;
+    return t;
+}
+
 static void cfg_load(const char *path)
 {
     FILE *f = fopen(path, "r");
     char line[128];
-    if (!f)
+    if (!f) {
+        fprintf(stderr, "nfsu2: no settings file at %s (%s)\n",
+                path, strerror(errno));
         return;
-    while (s_cfg_n < 16 && fgets(line, sizeof line, f)) {
+    }
+    while (s_cfg_n < 64 && fgets(line, sizeof line, f)) {
         char *eq = strchr(line, '=');
         if (!eq || eq == line)
             continue;
         *eq = 0;
         char *nl = eq + 1 + strcspn(eq + 1, "\r\n");
         *nl = 0;
-        snprintf(s_cfg[s_cfg_n].key, sizeof s_cfg[0].key, "%s", line);
-        snprintf(s_cfg[s_cfg_n].val, sizeof s_cfg[0].val, "%s", eq + 1);
+        /* UTF-8 BOM on the first line (Files app edits) shifts the key. */
+        if (s_cfg_n == 0 && (unsigned char)line[0] == 0xEF &&
+            (unsigned char)line[1] == 0xBB && (unsigned char)line[2] == 0xBF)
+            memmove(line, line + 3, strlen(line + 2));
+        char *k = cfg_trim(line), *v = cfg_trim(eq + 1);
+        snprintf(s_cfg[s_cfg_n].key, sizeof s_cfg[0].key, "%s", k);
+        snprintf(s_cfg[s_cfg_n].val, sizeof s_cfg[0].val, "%s", v);
         /* Same contract as the Switch's nfsu2x_env.txt: every line is also
          * exported to the environment so renderer/game switches
          * (RECOMP_PRESENT_INTERVAL, RECOMP_GL_SCALE, ...) read it. */
@@ -134,6 +153,8 @@ static void cfg_load(const char *path)
     }
     fclose(f);
     fprintf(stderr, "nfsu2: settings loaded (%d keys) from %s\n", s_cfg_n, path);
+    for (int i = 0; i < s_cfg_n; i++)
+        fprintf(stderr, "nfsu2:   %s=%s\n", s_cfg[i].key, s_cfg[i].val);
 }
 float nfsu2_cfg_overlay_alpha(void)
 {
