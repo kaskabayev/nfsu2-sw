@@ -202,7 +202,10 @@ if(IOS AND NOT NINTENDO_SWITCH)
         "-framework CoreGraphics" "-framework OpenGLES" "-framework CoreVideo")
 endif()
 
-# SetGammaRamp probe (all platforms): the gamma ramp the title uploads is
+# SetGammaRamp probe (non-Apple only): the gamma ramp the title uploads is
 # otherwise written into plain guest RAM (no PRMDIO off Windows) and lost.
-target_link_options(${PROJECT_NAME} PRIVATE
-    "LINKER:--wrap=sub_002F0D10")
+# Apple's ld has no --wrap, and the probe is diagnostic anyway.
+if(NOT APPLE)
+    target_link_options(${PROJECT_NAME} PRIVATE
+        "LINKER:--wrap=sub_002F0D10")
+endif()

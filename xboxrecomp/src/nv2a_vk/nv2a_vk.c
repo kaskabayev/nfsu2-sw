@@ -2367,8 +2367,12 @@ static int ready_impl(void)
             s_depth_fmt == VK_FORMAT_D24_UNORM_S8_UINT ? "D24S8" : "D32S8",
             s_have_depth_clamp ? "yes" : "no", (unsigned)s_ubo_align);
 #ifdef NFSU2_IOS
-    if (s_headless)
-        prewarm();          /* no renderer thread will call ready() again */
+    if (s_headless || !s_prewarm_deferred_io) {
+        prewarm();          /* headless: no renderer thread calls ready() */
+        s_prewarm_deferred_io = 0;
+    }
+#else
+    prewarm();
 #endif
     return 1;
 }

@@ -252,6 +252,7 @@ void sub_0009A250(void)
 }
 void sub_002A9450(void) { crt_memmove(); }
 
+#if !defined(__APPLE__)   /* Mach-O ld has no --wrap; probe is Linux-only */
 /* ── D3D_SetGammaRamp probe (0x002F0D10) ─────────────────────
  *
  * stdcall (ramp), ret 4: the D3D API the title uses to set the display
@@ -290,9 +291,10 @@ void __wrap_sub_002F0D10(void)
                 g_nfsu2_gamma[0], g_nfsu2_gamma[64], g_nfsu2_gamma[128],
                 g_nfsu2_gamma[192], g_nfsu2_gamma[255]);
     }
+    /* The generated body performs its own ret 4: no manual esp fixup. */
     __real_sub_002F0D10();
-    esp += 8;                               /* return address + one argument */
 }
+#endif  /* !__APPLE__ */
 
 /* ── D3D fence wait, D3D_BlockOnTime (0x002E8F20) ────────────
  *

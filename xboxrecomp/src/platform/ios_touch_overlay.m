@@ -37,8 +37,12 @@ static const char *zone_label_by_id(int id)
     }
 }
 
+@class Nfsu2GearTarget;
+static Nfsu2GearTarget *s_target;
+
 @interface Nfsu2Overlay : UIView
 - (void)applyVisibility:(BOOL)vis;
+@property (nonatomic, assign) BOOL shapesHidden;   /* controls off / pad on */
 @end
 
 @implementation Nfsu2Overlay
@@ -51,6 +55,7 @@ static const char *zone_label_by_id(int id)
         self.opaque = NO;
         self.contentMode = UIViewContentModeRedraw;
         self.alpha = nfsu2_cfg_overlay_alpha();
+        self.shapesHidden = NO;
         self.tag = 0x4E463531;             /* 'NF51' */
     }
     return self;
@@ -79,6 +84,8 @@ static const char *zone_label_by_id(int id)
     if (!c || !z || n <= 0)
         return;
     CGFloat W = self.bounds.size.width, H = self.bounds.size.height;
+    if (self.shapesHidden)
+        return;                 /* controls off / pad connected: gear+FPS stay */
     for (int i = 0; i < n; i++) {
         CGRect r = CGRectMake((z[i].cx - z[i].rx) * W,
                               (z[i].cy - z[i].ry) * H,
@@ -110,9 +117,8 @@ static const char *zone_label_by_id(int id)
 
 - (void)applyVisibility:(BOOL)vis
 {
-    self.hidden = !vis;
-    if (vis)
-        [self setNeedsDisplay];
+    self.shapesHidden = !vis;
+    [self setNeedsDisplay];
 }
 @end
 
@@ -137,6 +143,8 @@ static const char *zone_label_by_id(int id)
 static Nfsu2Overlay *s_ov;
 static UILabel *s_fps;
 static Nfsu2Panel *s_panel;
+/* Nfsu2GearTarget's @implementation declares s_target again below; keep a
+ * single definition. */
 
 static void panel_add_switch(Nfsu2Panel *panel, NSString *title, float y,
                              BOOL on, SEL action, id target)
@@ -160,8 +168,8 @@ static void toggle_fps(void)
 
 static void toggle_overlay(void)
 {
-    BOOL v = s_ov.alpha > 0.05f;
-    s_ov.alpha = v ? 0.0f : nfsu2_cfg_overlay_alpha();
+    s_ov.shapesHidden = !s_ov.shapesHidden;
+    [s_ov setNeedsDisplay];
 }
 
 static void build_panel(void)
@@ -174,7 +182,7 @@ static void build_panel(void)
     s_panel = panel;
     panel_add_switch(panel, @"Show FPS", 12, nfsu2_cfg_show_fps() != 0,
                      @selector(nfsu2ToggleFps), s_target);
-    panel_add_switch(panel, @"Touch controls", 56, s_ov.alpha > 0.05f,
+    panel_add_switch(panel, @"Touch controls", 56, !s_ov.shapesHidden,
                      @selector(nfsu2ToggleOverlay), s_target);
     UILabel *hint =
         [[UILabel alloc] initWithFrame:CGRectMake(12, 100, panel.bounds.size.width - 24, 40)];
@@ -205,8 +213,6 @@ static void build_panel(void)
     s_fps.text = [NSString stringWithFormat:@"%d.%d fps", x10 / 10, x10 % 10];
 }
 @end
-
-static Nfsu2GearTarget *s_target;
 
 static void build_fps_and_gear(void)
 {

@@ -607,6 +607,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "[FATAL] cannot start the game thread\n");
     }
     return rc;
+}
 #else
 /* POSIX (Linux host proof): the game on a big thread, main joins. */
 #include <pthread.h>
