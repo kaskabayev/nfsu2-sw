@@ -1577,6 +1577,10 @@ static VkImageView s_lut_view;
 static VkDeviceMemory s_lut_mem;
 static VkSampler s_lut_sampler, s_surf_sampler;
 static VkPipeline s_gamma_pipe;
+/* Dedicated layout for the gamma pass: the shared s_layout has no push
+ * constants, and the shader needs the picture rect to map coordinates. */
+static VkDescriptorSetLayout s_gamma_dsl;
+static VkPipelineLayout s_gamma_layout;
 static uint32_t s_lut_words[256];       /* RGBA8888 LUT on the host */
 
 extern const uint8_t g_nfsu2_gamma[768];
@@ -1664,7 +1668,33 @@ static void gamma_ensure(VkSurf *s)
             vkCreateSampler(s_dev, &sci2, NULL, &s_surf_sampler);
         }
     }
-    if (s_lut_img && !s_gamma_pipe) {
+    if (s_lut_img && !s_gamma_dsl) {
+        VkDescriptorSetLayoutBinding gb[2];
+        VkDescriptorSetLayoutCreateInfo glci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        VkPushConstantRange gpc;
+        VkPipelineLayoutCreateInfo gli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        memset(gb, 0, sizeof gb);
+        gb[0].binding = 0;                   /* the present surface */
+        gb[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        gb[0].descriptorCount = 1;
+        gb[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        gb[1] = gb[0];
+        gb[1].binding = 1;                   /* the gamma LUT */
+        glci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+        glci.bindingCount = 2;
+        glci.pBindings = gb;
+        if (vkCreateDescriptorSetLayout(s_dev, &glci, NULL, &s_gamma_dsl) == VK_SUCCESS) {
+            gpc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            gpc.offset = 0;
+            gpc.size = 16;                   /* vec4: offset.xy, 1/extent.xy */
+            gli.setLayoutCount = 1;
+            gli.pSetLayouts = &s_gamma_dsl;
+            gli.pushConstantRangeCount = 1;
+            gli.pPushConstantRanges = &gpc;
+            vkCreatePipelineLayout(s_dev, &gli, NULL, &s_gamma_layout);
+        }
+    }
+    if (s_lut_img && s_gamma_dsl && !s_gamma_pipe) {
         /* Fullscreen triangle VS + LUT FS, compiled like the game's. */
         static const char vs_src[] =
             "#version 450\n"
@@ -1675,11 +1705,13 @@ static void gamma_ensure(VkSurf *s)
             "}\n";
         static const char fs_src[] =
             "#version 450\n"
-            "layout(binding = 2) uniform sampler2D u_surf;\n"
-            "layout(binding = 3) uniform sampler1D u_lut;\n"
+            "layout(binding = 0) uniform sampler2D u_surf;\n"
+            "layout(binding = 1) uniform sampler1D u_lut;\n"
+            "layout(push_constant) uniform PC { vec4 u_rect; };  /* xy = picture offset, zw = 1/size */\n"
             "layout(location = 0) out vec4 o_col;\n"
             "void main() {\n"
-            "  vec3 c = texture(u_surf, gl_FragCoord.xy / vec2(textureSize(u_surf, 0))).rgb;\n"
+            "  vec2 uv = (gl_FragCoord.xy - u_rect.xy) * u_rect.zw;\n"
+            "  vec3 c = texture(u_surf, uv).rgb;\n"
             "  o_col = vec4(texture(u_lut, c.r).r, texture(u_lut, c.g).g,\n"
             "               texture(u_lut, c.b).b, 1.0);\n"
             "}\n";
@@ -1728,7 +1760,7 @@ static void gamma_ensure(VkSurf *s)
                     pci.pMultisampleState = &ms;
                     pci.pColorBlendState = &cb;
                     pci.pDynamicState = &ds;
-                    pci.layout = s_layout;
+                    pci.layout = s_gamma_layout ? s_gamma_layout : s_layout;
                     if (vkCreateGraphicsPipelines(s_dev, s_pcache, 1, &pci, NULL,
                                                   &s_gamma_pipe) != VK_SUCCESS)
                         s_gamma_pipe = VK_NULL_HANDLE;
@@ -3855,10 +3887,12 @@ static void vk_flip(void)
                     /* LUT present pass: a full-screen draw with the
                      * letterbox as its viewport; the clear above already
                      * made the bars black. Sampling the surface (GENERAL)
-                     * and writing the swapchain attachment. */
+                     * and writing the swapchain attachment. Falls back to
+                     * the plain blit if any piece failed to build. */
                     gamma_ensure(s);
                     gamma_upload_lut();
-                    if (s_gamma_pipe && s_lut_view) {
+                    if (s_gamma_pipe && s_lut_view && s_gamma_layout &&
+                        idx < 8 && s_sc_view[idx] != VK_NULL_HANDLE) {
                         VkImageMemoryBarrier gb = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
                         gb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                         gb.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -3876,10 +3910,10 @@ static void vk_flip(void)
                         gca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
                         gca.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
                         gca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                        gri.renderArea.offset.x = dx;
-                        gri.renderArea.offset.y = dy;
-                        gri.renderArea.extent.width = (uint32_t)dw;
-                        gri.renderArea.extent.height = (uint32_t)dh;
+                        gri.renderArea.offset.x = 0;
+                        gri.renderArea.offset.y = 0;
+                        gri.renderArea.extent.width = s_sc_extent.width;
+                        gri.renderArea.extent.height = s_sc_extent.height;
                         gri.layerCount = 1;
                         gri.colorAttachmentCount = 1;
                         gri.pColorAttachments = &gca;
@@ -3908,7 +3942,17 @@ static void vk_flip(void)
                         w[1] = w[0];
                         w[1].dstBinding = 3;
                         w[1].pImageInfo = &dii[1];
-                        p_push_desc(s_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s_layout, 0, 2, w);
+                        /* stageFlags come from the layout's bindings. */
+                        p_push_desc(s_cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    s_gamma_layout ? s_gamma_layout : s_layout, 0, 2, w);
+                        {
+                            /* u_rect = picture offset xy, 1/extent zw. */
+                            float pc[4] = { (float)dx, (float)dy,
+                                            1.0f / (float)dw, 1.0f / (float)dh };
+                            vkCmdPushConstants(s_cb,
+                                               s_gamma_layout ? s_gamma_layout : s_layout,
+                                               VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
+                        }
                         vkCmdDraw(s_cb, 3, 1, 0, 0);
                         end_rendering();
                         gb.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
