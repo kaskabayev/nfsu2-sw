@@ -71,18 +71,21 @@
  */
 static const XBOX_IOS_TOUCH_ZONE s_zones[] = {
     /* id   cx      cy      rx      ry      kind               value            */
+    /* Shoulders ABOVE triggers, both near the top edge; clear of the
+     * Dynamic Island (x 11-48 pt, y 133-260 pt in landscape) and of the
+     * d-pad/stick areas. Numerically checked on 852x393. */
     {  1,  0.056f, 0.102f, 0.035f, 0.076f, XBOX_IOS_ZONE_FLAG,   XBOX_GAMEPAD_BACK  },
     {  2,  0.944f, 0.102f, 0.035f, 0.076f, XBOX_IOS_ZONE_FLAG,   XBOX_GAMEPAD_START },
-    {  3,  0.112f, 0.789f, 0.065f, 0.140f, XBOX_IOS_ZONE_DPAD,   0                  },
-    {  4,  0.130f, 0.560f, 0.046f, 0.100f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_BLACK  },  /* LB */
-    {  5,  0.130f, 0.780f, 0.046f, 0.100f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_LTRIGGER }, /* LT */
-    {  6,  0.944f, 0.445f, 0.046f, 0.100f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_WHITE  },  /* RB */
-    {  7,  0.944f, 0.660f, 0.046f, 0.100f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_RTRIGGER }, /* RT */
-    /* ABXY diamond: centres 0.055 apart, radius 0.040 -- no overlap. */
-    {  8,  0.840f, 0.860f, 0.040f, 0.087f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_A      },
-    {  9,  0.905f, 0.770f, 0.040f, 0.087f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_B      },
-    { 10,  0.775f, 0.770f, 0.040f, 0.087f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_X      },
-    { 11,  0.840f, 0.680f, 0.040f, 0.087f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_Y      },
+    {  4,  0.165f, 0.130f, 0.042f, 0.091f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_BLACK    },  /* LB */
+    {  6,  0.835f, 0.130f, 0.042f, 0.091f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_WHITE    },  /* RB */
+    {  5,  0.165f, 0.370f, 0.048f, 0.104f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_LTRIGGER },  /* LT */
+    {  7,  0.835f, 0.370f, 0.048f, 0.104f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_RTRIGGER },  /* RT */
+    /* ABXY diamond, right-bottom; centres >=0.065 apart, rx 0.038. */
+    {  8,  0.840f, 0.860f, 0.038f, 0.082f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_A      },
+    {  9,  0.905f, 0.770f, 0.038f, 0.082f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_B      },
+    { 10,  0.775f, 0.770f, 0.038f, 0.082f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_X      },
+    { 11,  0.840f, 0.680f, 0.038f, 0.082f, XBOX_IOS_ZONE_ANALOG, XBOX_BUTTON_Y      },
+    {  3,  0.080f, 0.810f, 0.058f, 0.126f, XBOX_IOS_ZONE_DPAD,   0                  },
 };
 #define ZONE_COUNT (sizeof s_zones / sizeof s_zones[0])
 
@@ -126,7 +129,22 @@ static TouchFinger s_finger[TOUCH_MAX_FINGERS];
 static float       s_aspect = 9.0f / 16.0f;   /* window height / width (landscape) */
 static DWORD       s_packet;
 static int         s_live;                    /* the watch is installed */
-static int         s_disabled = -1;           /* RECOMP_TOUCH, read once */
+static int         s_disabled = -1;           /* RECOMP_TOUCH, then settings */
+
+/* Settings hooks (nfsu2_env.txt / gear panel). Called from the main thread
+ * between polls; races with a poll in flight settle on the next poll. */
+void xbox_ios_touch_set_enabled(int on)
+{
+    if (on)
+        s_disabled = 0;
+    else if (s_disabled < 0)
+    {
+        const char *v = getenv("RECOMP_TOUCH");
+        s_disabled = (v && strcmp(v, "0") == 0) || !on;
+    }
+    else
+        s_disabled = !on;
+}
 
 /* A stick's maximum deflection, as a fraction of the screen width -- the
  * same in normalized x units on every device, which is why the radius is

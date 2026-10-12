@@ -252,6 +252,48 @@ void sub_0009A250(void)
 }
 void sub_002A9450(void) { crt_memmove(); }
 
+/* ── D3D_SetGammaRamp probe (0x002F0D10) ─────────────────────
+ *
+ * stdcall (ramp), ret 4: the D3D API the title uses to set the display
+ * gamma. Off Windows the target NV2A MMIO bytes are plain guest RAM, so the
+ * write is lost and the display keeps the identity ramp. Capture the ramp
+ * here so the present path can apply it as a LUT (as xemu does), and log
+ * whether it is non-identity once per change. The generated body still
+ * runs (it must: D3D reads the ramp back through this memory). */
+uint8_t g_nfsu2_gamma[768];
+uint32_t g_nfsu2_gamma_gen;
+extern void __real_sub_002F0D10(void);
+
+/* Linked with -Wl,--wrap=sub_002F0D10 (see CMakeLists): every call to the
+ * generated SetGammaRamp lands here first. The generated body keeps its
+ * original name (__real_… under the wrap). */
+void __wrap_sub_002F0D10(void)
+{
+    uint32_t ramp = MEM32(esp + 4);
+    const uint8_t *r = (const uint8_t *)XBOX_PTR(ramp);
+    static uint32_t sum;
+    uint32_t s = 0;
+    for (int i = 0; i < 768; i++) {
+        g_nfsu2_gamma[i] = r[i];
+        s += r[i];
+    }
+    if (s != sum) {
+        sum = s;
+        g_nfsu2_gamma_gen++;
+        int ident = 1;
+        for (int i = 0; i < 256 && ident; i++)
+            if (g_nfsu2_gamma[i] != i || g_nfsu2_gamma[256 + i] != i ||
+                g_nfsu2_gamma[512 + i] != i)
+                ident = 0;
+        fprintf(stderr, "[GAMMA] ramp gen %u: %s, g0=%u g64=%u g128=%u g192=%u g255=%u\n",
+                g_nfsu2_gamma_gen, ident ? "IDENTITY" : "NON-IDENTITY",
+                g_nfsu2_gamma[0], g_nfsu2_gamma[64], g_nfsu2_gamma[128],
+                g_nfsu2_gamma[192], g_nfsu2_gamma[255]);
+    }
+    __real_sub_002F0D10();
+    esp += 8;                               /* return address + one argument */
+}
+
 /* ── D3D fence wait, D3D_BlockOnTime (0x002E8F20) ────────────
  *
  * stdcall (fence, flags), ret 8. The stock XDK 5849 D3D keeps its device at

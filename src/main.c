@@ -100,6 +100,48 @@ int SDL_InitSubSystem(uint32_t flags);
 void *SDL_CreateWindow(const char *title, int x, int y, int w, int h, uint32_t flags);
 const char *SDL_GetError(void);
 int SDL_WaitEvent(void *event);
+void SDL_RaiseWindow(void *window);
+/* Settings: Documents/nfsu2_env.txt, KEY=VALUE (Switch nfsu2x_env.txt format). */
+static struct { char key[32]; char val[64]; } s_cfg[16];
+static int s_cfg_n;
+static const char *cfg_get(const char *k)
+{
+    for (int i = 0; i < s_cfg_n; i++)
+        if (!strcmp(s_cfg[i].key, k))
+            return s_cfg[i].val;
+    return NULL;
+}
+static void cfg_load(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    char line[128];
+    if (!f)
+        return;
+    while (s_cfg_n < 16 && fgets(line, sizeof line, f)) {
+        char *eq = strchr(line, '=');
+        if (!eq || eq == line)
+            continue;
+        *eq = 0;
+        char *nl = eq + 1 + strcspn(eq + 1, "\r\n");
+        *nl = 0;
+        snprintf(s_cfg[s_cfg_n].key, sizeof s_cfg[0].key, "%s", line);
+        snprintf(s_cfg[s_cfg_n].val, sizeof s_cfg[0].val, "%s", eq + 1);
+        s_cfg_n++;
+    }
+    fclose(f);
+    fprintf(stderr, "nfsu2: settings loaded (%d keys) from %s\n", s_cfg_n, path);
+}
+float nfsu2_cfg_overlay_alpha(void)
+{
+    const char *v = cfg_get("NFSU2_OVERLAY_ALPHA");
+    float a = v ? (float)atof(v) : 0.55f;
+    return a < 0.2f ? 0.2f : a > 0.8f ? 0.8f : a;
+}
+int nfsu2_cfg_show_fps(void)
+{
+    const char *v = cfg_get("NFSU2_SHOW_FPS");
+    return v ? (*v == '1' || *v == 'y') : 1;
+}
 void SDL_SetHint(const char *name, const char *value);
 int SDL_PollEvent(void *event);
 /* SDL_syswm.h subset: SDL_GetWindowWMInfo(SDL_Window*, SDL_SysWMinfo*).
@@ -465,6 +507,9 @@ int main(int argc, char **argv)
     {
         extern void nv2a_vk_set_window(void *win);
         SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+        /* Defer all edge gestures: a steering thumb sliding off the bottom
+         * edge must not leave the game. */
+        SDL_SetHint("SDL_IOS_HIDE_HOME_INDICATOR", "2");
         SDL_InitSubSystem(SDL_INIT_VIDEO);
         fprintf(stderr, "nfsu2: creating SDL window on main thread\n");
         void *win = SDL_CreateWindow("NFSU2", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -477,6 +522,22 @@ int main(int argc, char **argv)
             fprintf(stderr, "nfsu2: FATAL no window; refusing off-main fallback\n");
         else {
             extern int nv2a_vk_init_on_main(void);
+            /* Relative cache paths (progcache.bin, vkspirv.bin,
+             * vkpipecache.bin) resolve against the cwd, which is read-only
+             * on iOS. chdir into Documents so they persist across launches;
+             * NFSU2_GAME_DIR overrides still win inside game_main. */
+            {
+                const char *gd = getenv("NFSU2_GAME_DIR");
+                const char *docs = NSTemporaryDirectory_path("Documents");
+                if (chdir(gd && gd[0] ? gd : docs) == 0) {
+                    /* Settings live right there: nfsu2_env.txt. */
+                    char cfgp[1100];
+                    snprintf(cfgp, sizeof cfgp, "%s/nfsu2_env.txt", gd && gd[0] ? gd : docs);
+                    cfg_load(cfgp);
+                    fprintf(stderr, "nfsu2: cwd %s (caches persist)\n",
+                            gd && gd[0] ? gd : docs);
+                }
+            }
             fprintf(stderr, "nfsu2: eager renderer init on main thread\n");
             int ok = nv2a_vk_init_on_main();
             fprintf(stderr, "nfsu2: eager init %s\n", ok ? "ok" : "FAILED (headless)");
@@ -542,6 +603,33 @@ int main(int argc, char **argv)
             }
         }
         pthread_join(th, NULL);
+    } else {
+        fprintf(stderr, "[FATAL] cannot start the game thread\n");
+    }
+    return rc;
+#else
+/* POSIX (Linux host proof): the game on a big thread, main joins. */
+#include <pthread.h>
+static void *linux_game_thread(void *arg)
+{
+    (void)arg;
+    game_main();
+    return NULL;
+}
+
+int main(int argc, char **argv)
+{
+    pthread_attr_t attr;
+    pthread_t th;
+    int rc = 1;
+
+    (void)argc;
+    (void)argv;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 16u << 20);
+    if (pthread_create(&th, &attr, linux_game_thread, NULL) == 0) {
+        pthread_join(th, NULL);
+        rc = 0;
     } else {
         fprintf(stderr, "[FATAL] cannot start the game thread\n");
     }

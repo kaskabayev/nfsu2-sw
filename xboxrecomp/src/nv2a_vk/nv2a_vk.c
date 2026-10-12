@@ -1,3 +1,7 @@
+#if defined(__APPLE__) && defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
+#  define NFSU2_IOS 1
+#endif
+
 /*
  * nv2a_vk.c -- a Vulkan 1.3 renderer for the pushbuffer executor.
  *
@@ -1551,6 +1555,11 @@ static int s_dyn_vertex_input;
 /* iOS: set by main.c when the app is backgrounded/hidden; vk_flip skips
  * acquire/present while it holds (Metal blocks present in background). */
 static int s_ios_bg;
+
+/* Guest-flip rate, tenths of fps, sampled in vk_flip. Read by the on-screen
+ * FPS counter (overlay, main thread). */
+static uint32_t s_fps_x10;
+int nv2a_vk_fps_x10(void) { return __atomic_load_n(&s_fps_x10, __ATOMIC_RELAXED); }
 static int s_sc_dirty;
 void nv2a_vk_set_background(int bg) { s_ios_bg = bg; }
 int nfsu2_ios_background(void) { return s_ios_bg; }
@@ -1985,16 +1994,30 @@ static int create_swapchain(void)
 static int ready_impl(void);
 
 /* Eager init on the app main thread (iOS): surface+swapchain need UIKit. */
+#ifdef NFSU2_IOS
+static int s_prewarm_deferred_io;
 int nv2a_vk_init_on_main(void)
 {
     if (s_state > 0) return 1;
+    s_prewarm_deferred_io = 1;   /* prewarm moves to the renderer thread */
     fprintf(stderr, "[VKINIT] eager init on main thread\n"); fflush(stderr);
     return ready_impl();
 }
+#endif
 
 static int ready(void)
 {
-    return ready_impl();
+    int ok = ready_impl();
+#ifdef NFSU2_IOS
+    /* The eager init on iOS runs ready_impl on the UIKit MAIN thread; with
+     * shader caches on disk the prewarm there would block launch for
+     * seconds (watchdog). Defer it to the first renderer-thread call. */
+    if (ok && s_prewarm_deferred_io) {
+        s_prewarm_deferred_io = 0;
+        prewarm();
+    }
+#endif
+    return ok;
 }
 
 static int ready_impl(void)
@@ -2343,7 +2366,10 @@ static int ready_impl(void)
             s_headless ? " (headless)" : "", s_have_bc ? "yes" : "no",
             s_depth_fmt == VK_FORMAT_D24_UNORM_S8_UINT ? "D24S8" : "D32S8",
             s_have_depth_clamp ? "yes" : "no", (unsigned)s_ubo_align);
-    prewarm();
+#ifdef NFSU2_IOS
+    if (s_headless)
+        prewarm();          /* no renderer thread will call ready() again */
+#endif
     return 1;
 }
 
@@ -3423,6 +3449,27 @@ static void vk_flip(void)
         return;
     pend_flush();
     s_frame++;
+    {
+        /* Guest-flip rate for the on-screen counter: sample every 500 ms. */
+        static uint64_t last_ns;
+        static uint32_t last_frame;
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        uint64_t ns = (uint64_t)now.tv_sec * 1000000000ull + now.tv_nsec;
+        if (last_ns && ns > last_ns) {
+            if (ns - last_ns >= 500000000ull) {
+                __atomic_store_n(&s_fps_x10,
+                                 (uint32_t)((uint64_t)(s_frame - last_frame) *
+                                            10000000000ull / (ns - last_ns)),
+                                 __ATOMIC_RELAXED);
+                last_ns = ns;
+                last_frame = s_frame;
+            }
+        } else {
+            last_ns = ns;
+            last_frame = s_frame;
+        }
+    }
     if (s_inst_alt)
         s_inst_on = s_frame & 1;
     {

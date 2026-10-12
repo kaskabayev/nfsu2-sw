@@ -351,8 +351,22 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
     if (!SDL_WasInit(SDL_INIT_GAMECONTROLLER))
         SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
     open_controllers();
-    if (dwPort == 0)
+    if (dwPort == 0) {
         xbox_ios_touch_init();
+        /* A real pad takes over: hide the on-screen controls until it
+         * leaves. Set from this (game) thread; the overlay hops to the
+         * main queue internally. */
+        {
+            static int prev_has = -1;
+            SDL_GameController *p0 = g_pads[0];
+            int has = p0 && SDL_GameControllerGetAttached(p0);
+            if (has != prev_has) {
+                prev_has = has;
+                extern void ios_touch_overlay_set_visible(int v);
+                ios_touch_overlay_set_visible(!has);
+            }
+        }
+    }
 #endif
 
     SDL_GameController *c = g_pads[dwPort];
