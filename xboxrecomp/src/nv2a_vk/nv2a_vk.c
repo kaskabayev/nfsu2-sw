@@ -121,7 +121,6 @@ static VkFormat       s_sc_format;
 static VkExtent2D     s_sc_extent;
 static uint32_t       s_sc_count;
 static VkImage        s_sc_images[8];
-static VkImageView    s_sc_view[8];          /* color-attachment views for the gamma pass */
 static int            s_headless;
 #if !defined(__SWITCH__)
 static SDL_Window    *s_win;
@@ -1577,6 +1576,7 @@ static VkImageView s_lut_view;
 static VkDeviceMemory s_lut_mem;
 static VkSampler s_lut_sampler, s_surf_sampler;
 static VkPipeline s_gamma_pipe;
+static int      s_gamma_logged;         /* engaged-once log */
 /* Dedicated layout for the gamma pass: the shared s_layout has no push
  * constants, and the shader needs the picture rect to map coordinates. */
 static VkDescriptorSetLayout s_gamma_dsl;
@@ -1608,36 +1608,80 @@ static int gamma_lut_active(void)
 static void gamma_lut_fill(void)
 {
     double k = gamma_user_k();
+    int have_ramp = __atomic_load_n(&g_nfsu2_gamma_gen, __ATOMIC_RELAXED) != 0;
+    memset(s_lut_words, 0, sizeof s_lut_words);
     for (int i = 0; i < 256; i++) {
+        /* One curve: out = ramp(255 * pow(i/255, 1/k)); the 1/k exponent
+         * brightens when k > 1 (NFSU2_GAMMA=1.2), the ramp restores what
+         * the title wrote for the TV. Input is the texel value i. */
+        double v = pow((double)i / 255.0, 1.0 / k);
+        unsigned idx = (unsigned)(255.0 * v + 0.5);
+        if (idx > 255) idx = 255;
+        unsigned r = 255 * pow((double)i / 255.0, 1.0 / k) + 0.5;
+        if (r > 255) r = 255;
+        if (r < 0) r = 0;
+        unsigned out[3] = { r, r, r };
         for (int c = 0; c < 3; c++) {
-            unsigned in = g_nfsu2_gamma[c * 256 + i];      /* 0..255 */
-            double v = (double)in / 255.0;
-            v = pow(v, k);                                  /* user boost */
-            double o = (double)i / 255.0;
-            /* LUT does ramp∘boost in one 8-bit output: out = ramp(255 * v)
-             * would clamp; instead out = 255 * pow(ramp/255, 1/k)… — keep
-             * it simple and exact for the common case: the ramp is applied
-             * at display time as the identity exponent of k over the ramp:
-             * out = 255 * pow(in/255, k) when the ramp is identity, else
-             * out = ramp[(unsigned)(255 * pow(in/255, k))]. */
-            unsigned idx = (unsigned)(255.0 * v + 0.5);
-            if (idx > 255) idx = 255;
-            unsigned out = __atomic_load_n(&g_nfsu2_gamma_gen, __ATOMIC_RELAXED)
-                               ? g_nfsu2_gamma[c * 256 + idx] : idx;
-            s_lut_words[i] |= (out & 0xFFu) << (8 * c);
+            if (have_ramp) {
+                unsigned rr = g_nfsu2_gamma[c * 256 + idx];
+                out[c] = rr > 255 ? 255 : rr;
+            }
+            s_lut_words[i] |= (out[c] & 0xFFu) << (8 * c);
         }
         s_lut_words[i] |= 0xFF000000u;
     }
+    if (!s_gamma_logged) {
+        s_gamma_logged = 1;
+        fprintf(stderr,
+                "[GAMMA] LUT pass engaged k=%.2f ramp=%s lut[0]=%08X lut[128]=%08X lut[255]=%08X\n",
+                k, have_ramp ? "set" : "identity", s_lut_words[0],
+                s_lut_words[128], s_lut_words[255]);
+    }
+}
+
+/* Offscreen copy of the present surface with the LUT applied. The whole
+ * proven blit present path stays untouched: the pass only replaces the
+ * blit SOURCE. One image, recreated when the surface grows. */
+static VkSurf s_gtmp;
+static int    s_gamma_broken;           /* sticky: any failed step */
+
+static int gamma_temp_ok(VkSurf *s)
+{
+    if (s_gtmp.image && s_gtmp.pw == s->pw && s_gtmp.ph == s->ph)
+        return 1;
+    if (s_gtmp.image) {
+        garbage_add(s_gtmp.image, s_gtmp.view, s_gtmp.mem);
+        memset(&s_gtmp, 0, sizeof s_gtmp);
+    }
+    if (!make_image(s->pw, s->ph, VK_FORMAT_B8G8R8A8_UNORM,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, &s_gtmp.image, &s_gtmp.view, &s_gtmp.mem)) {
+        if (!s_gamma_broken) {
+            s_gamma_broken = 1;
+            fprintf(stderr, "[GAMMA] pass disabled: temp image\n");
+        }
+        return 0;
+    }
+    s_gtmp.pw = s->pw;
+    s_gtmp.ph = s->ph;
+    s_gtmp.va = 0xFFFF0000u;             /* never matches a real target */
+    clear_image_color(s_gtmp.image, 0, 0, 0, 1);
+    return 1;
 }
 
 static void gamma_ensure(VkSurf *s)
 {
+    if (s_gamma_broken)
+        return;
     /* LUT image + sampler + pipeline, all lazily created. */
     if (!s_lut_img) {
         VkImageCreateInfo ici = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-        ici.imageType = VK_IMAGE_TYPE_1D;
+        ici.imageType = VK_IMAGE_TYPE_2D;
         ici.format = VK_FORMAT_R8G8B8A8_UNORM;
-        ici.extent.width = 256; ici.extent.height = 1; ici.extent.depth = 1;
+        ici.extent.width = 256;
+        ici.extent.height = 1;
+        ici.extent.depth = 1;
         ici.mipLevels = 1;
         ici.arrayLayers = 1;
         ici.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1654,25 +1698,29 @@ static void gamma_ensure(VkSurf *s)
                 vkBindImageMemory(s_dev, s_lut_img, s_lut_mem, 0);
             VkImageViewCreateInfo vci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
             vci.image = s_lut_img;
-            vci.viewType = VK_IMAGE_VIEW_TYPE_1D;
+            vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
             vci.format = VK_FORMAT_R8G8B8A8_UNORM;
             vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             vci.subresourceRange.layerCount = 1;
             vci.subresourceRange.levelCount = 1;
             vkCreateImageView(s_dev, &vci, NULL, &s_lut_view);
             VkSamplerCreateInfo sci = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-            sci.magFilter = sci.minFilter = VK_FILTER_LINEAR;
+            sci.magFilter = sci.minFilter = VK_FILTER_NEAREST;
             sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
             sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
             sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
             sci.maxLod = 1.0f;
             vkCreateSampler(s_dev, &sci, NULL, &s_lut_sampler);
-            VkSamplerCreateInfo sci2 = sci;   /* the surface sampler */
-            vkCreateSampler(s_dev, &sci2, NULL, &s_surf_sampler);
+            vkCreateSampler(s_dev, &sci, NULL, &s_surf_sampler);
+        }
+        if (!s_lut_view) {
+            s_gamma_broken = 1;
+            fprintf(stderr, "[GAMMA] pass disabled: lut image\n");
+            return;
         }
     }
     if (s_lut_img && !s_gamma_dsl) {
-        VkDescriptorSetLayoutBinding gb[2];
+        VkDescriptorSetLayoutBinding gb[3];
         VkDescriptorSetLayoutCreateInfo glci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
         VkPipelineLayoutCreateInfo gli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
         memset(gb, 0, sizeof gb);
@@ -1682,24 +1730,24 @@ static void gamma_ensure(VkSurf *s)
         gb[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         gb[1] = gb[0];
         gb[1].binding = 1;                   /* the gamma LUT */
-        gb[2].binding = 2;                   /* the picture-rect UBO */
-        gb[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        gb[2].descriptorCount = 1;
-        gb[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         glci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
-        glci.bindingCount = 3;
+        glci.bindingCount = 2;
         glci.pBindings = gb;
         if (vkCreateDescriptorSetLayout(s_dev, &glci, NULL, &s_gamma_dsl) == VK_SUCCESS) {
             /* NO push constants: MoltenVK crashes binding implicit
-             * push-constant buffers at draw time (device-proven, v17).
-             * The rect rides a ring UBO instead, like the game's own. */
+             * push-constant buffers at draw time (device-proven, v17). */
             gli.setLayoutCount = 1;
             gli.pSetLayouts = &s_gamma_dsl;
-            vkCreatePipelineLayout(s_dev, &gli, NULL, &s_gamma_layout);
+            if (vkCreatePipelineLayout(s_dev, &gli, NULL, &s_gamma_layout) != VK_SUCCESS)
+                s_gamma_layout = VK_NULL_HANDLE;
+        }
+        if (!s_gamma_dsl || !s_gamma_layout) {
+            s_gamma_broken = 1;
+            fprintf(stderr, "[GAMMA] pass disabled: layout\n");
+            return;
         }
     }
     if (s_lut_img && s_gamma_dsl && !s_gamma_pipe) {
-        /* Fullscreen triangle VS + LUT FS, compiled like the game's. */
         static const char vs_src[] =
             "#version 450\n"
             "void main() {\n"
@@ -1710,70 +1758,86 @@ static void gamma_ensure(VkSurf *s)
         static const char fs_src[] =
             "#version 450\n"
             "layout(binding = 0) uniform sampler2D u_surf;\n"
-            "layout(binding = 1) uniform sampler1D u_lut;\n"
-            "layout(binding = 2) uniform Rect { vec4 u_rect; };  /* xy = offset, zw = 1/size */\n"
+            "layout(binding = 1) uniform sampler2D u_lut;\n"
             "layout(location = 0) out vec4 o_col;\n"
             "void main() {\n"
-            "  vec2 uv = (gl_FragCoord.xy - u_rect.xy) * u_rect.zw;\n"
-            "  vec3 c = texture(u_surf, uv).rgb;\n"
-            "  o_col = vec4(texture(u_lut, c.r).r, texture(u_lut, c.g).g,\n"
-            "               texture(u_lut, c.b).b, 1.0);\n"
+            "  vec3 c = texelFetch(u_surf, ivec2(gl_FragCoord.xy), 0).rgb;\n"
+            "  o_col = vec4(texelFetch(u_lut, ivec2(int(c.r * 255.0 + 0.5), 0), 0).r,\n"
+            "               texelFetch(u_lut, ivec2(int(c.g * 255.0 + 0.5), 0), 0).g,\n"
+            "               texelFetch(u_lut, ivec2(int(c.b * 255.0 + 0.5), 0), 0).b, 1.0);\n"
             "}\n";
         VkShaderModule vs = compile(GLSLANG_STAGE_VERTEX, vs_src);
         VkShaderModule fs = compile(GLSLANG_STAGE_FRAGMENT, fs_src);
         if (vs != VK_NULL_HANDLE && fs != VK_NULL_HANDLE) {
-                    VkPipelineShaderStageCreateInfo st[2];
-                    memset(st, 0, sizeof st);
-                    st[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-                    st[0].stage = VK_SHADER_STAGE_VERTEX_BIT; st[0].module = vs;
-                    st[0].pName = "main";
-                    st[1] = st[0];
-                    st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = fs;
-                    VkPipelineVertexInputStateCreateInfo vi = {
-                        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-                    VkPipelineInputAssemblyStateCreateInfo ia = {
-                        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
-                    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-                    VkPipelineViewportStateCreateInfo vp = {
-                        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
-                    vp.viewportCount = 1; vp.scissorCount = 1;
-                    VkPipelineRasterizationStateCreateInfo rs = {
-                        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
-                    rs.polygonMode = VK_POLYGON_MODE_FILL;
-                    rs.cullMode = VK_CULL_MODE_NONE;
-                    VkPipelineMultisampleStateCreateInfo ms = {
-                        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
-                    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-                    VkPipelineColorBlendStateCreateInfo cb = {
-                        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
-                    VkPipelineColorBlendAttachmentState cba;
-                    memset(&cba, 0, sizeof cba);
-                    cba.colorWriteMask = 0xF;
-                    cb.attachmentCount = 1; cb.pAttachments = &cba;
-                    VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-                    VkPipelineDynamicStateCreateInfo ds = {
-                        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
-                    ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
-                    VkGraphicsPipelineCreateInfo pci = {
-                        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
-                    pci.stageCount = 2; pci.pStages = st;
-                    pci.pVertexInputState = &vi;
-                    pci.pInputAssemblyState = &ia;
-                    pci.pViewportState = &vp;
-                    pci.pRasterizationState = &rs;
-                    pci.pMultisampleState = &ms;
-                    pci.pColorBlendState = &cb;
-                    pci.pDynamicState = &ds;
-                    pci.layout = s_gamma_layout ? s_gamma_layout : s_layout;
-                    if (vkCreateGraphicsPipelines(s_dev, s_pcache, 1, &pci, NULL,
-                                                  &s_gamma_pipe) != VK_SUCCESS)
-                        s_gamma_pipe = VK_NULL_HANDLE;
+            VkPipelineShaderStageCreateInfo st[2];
+            memset(st, 0, sizeof st);
+            st[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            st[0].stage = VK_SHADER_STAGE_VERTEX_BIT; st[0].module = vs;
+            st[0].pName = "main";
+            st[1] = st[0];
+            st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = fs;
+            VkPipelineVertexInputStateCreateInfo vi = {
+                VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+            VkPipelineInputAssemblyStateCreateInfo ia = {
+                VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+            ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+            VkPipelineViewportStateCreateInfo vp = {
+                VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+            vp.viewportCount = 1; vp.scissorCount = 1;
+            VkPipelineRasterizationStateCreateInfo rs = {
+                VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+            rs.polygonMode = VK_POLYGON_MODE_FILL;
+            rs.lineWidth = 1.0f;
+            rs.cullMode = VK_CULL_MODE_NONE;
+            VkPipelineMultisampleStateCreateInfo ms = {
+                VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+            ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+            VkPipelineColorBlendStateCreateInfo cb = {
+                VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+            VkPipelineColorBlendAttachmentState cba;
+            memset(&cba, 0, sizeof cba);
+            cba.colorWriteMask = 0xF;
+            cb.attachmentCount = 1; cb.pAttachments = &cba;
+            VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+            VkPipelineDynamicStateCreateInfo ds = {
+                VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+            ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+            /* The pipeline must know its colour attachment format: with no
+             * VkPipelineRenderingCreateInfo Metal builds it with no colour
+             * output and drops every fragment write (v18, black screen). */
+            VkFormat cf = VK_FORMAT_B8G8R8A8_UNORM;
+            VkPipelineRenderingCreateInfo rci = {
+                VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+            rci.colorAttachmentCount = 1;
+            rci.pColorAttachmentFormats = &cf;
+            VkGraphicsPipelineCreateInfo pci = {
+                VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+            pci.pNext = &rci;
+            pci.stageCount = 2; pci.pStages = st;
+            pci.pVertexInputState = &vi;
+            pci.pInputAssemblyState = &ia;
+            pci.pViewportState = &vp;
+            pci.pRasterizationState = &rs;
+            pci.pMultisampleState = &ms;
+            pci.pColorBlendState = &cb;
+            pci.pDynamicState = &ds;
+            pci.layout = s_gamma_layout;
+            if (vkCreateGraphicsPipelines(s_dev, s_pcache, 1, &pci, NULL,
+                                          &s_gamma_pipe) != VK_SUCCESS)
+                s_gamma_pipe = VK_NULL_HANDLE;
+            if (!s_gamma_pipe) {
+                s_gamma_broken = 1;
+                fprintf(stderr, "[GAMMA] pass disabled: pipeline\n");
+            }
+        } else {
+            s_gamma_broken = 1;
+            fprintf(stderr, "[GAMMA] pass disabled: shaders\n");
         }
     }
 }
 
 /* Upload the LUT when its inputs changed. Runs on the render thread, in
- * the flip's command buffer, before the present draw. */
+ * the flip's command buffer, before the correction draw. */
 static void gamma_upload_lut(void)
 {
     uint32_t gen = __atomic_load_n(&g_nfsu2_gamma_gen, __ATOMIC_RELAXED);
@@ -1801,23 +1865,56 @@ static void gamma_upload_lut(void)
     rg.imageExtent.width = 256;
     rg.imageExtent.height = 1;
     rg.imageExtent.depth = 1;
-    /* The LUT image has never been used: transition undefined->GENERAL
-     * (copied as sampled later) in one go. */
-    VkImageMemoryBarrier mb = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    mb.srcAccessMask = 0;
-    mb.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    mb.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    mb.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    mb.image = s_lut_img;
-    mb.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    mb.subresourceRange.layerCount = 1;
-    mb.subresourceRange.levelCount = 1;
-    vkCmdPipelineBarrier(s_cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                         0, NULL, 0, NULL, 1, &mb);
     vkCmdCopyBufferToImage(s_cb, s_f->ring, s_lut_img,
                            VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+    /* barrier_all() inside begin_rendering orders the copy before the
+     * shader reads it. */
 }
+
+/* The correction pass: surface -> s_gtmp with the LUT. Uses only the
+ * game's own rendering helpers (proven on this device). Returns the
+ * image to blit from, or NULL to fall back to the plain surface. */
+static VkImage gamma_pass(VkSurf *s)
+{
+    gamma_ensure(s);
+    if (s_gamma_broken || !s_gamma_pipe)
+        return NULL;
+    if (!gamma_temp_ok(s))
+        return NULL;
+    gamma_upload_lut();
+    begin_rendering(&s_gtmp, NULL);      /* ends any open rendering first,
+                                          * sets viewport+scissor to full */
+    vkCmdBindPipeline(s_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s_gamma_pipe);
+    VkDescriptorImageInfo dii[2];
+    VkWriteDescriptorSet w[2];
+    memset(dii, 0, sizeof dii);
+    memset(w, 0, sizeof w);
+    dii[0].sampler = s_surf_sampler;
+    dii[0].imageView = s->view;
+    dii[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    dii[1].sampler = s_lut_sampler;
+    dii[1].imageView = s_lut_view;
+    dii[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w[0].dstBinding = 0;
+    w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w[0].descriptorCount = 1;
+    w[0].pImageInfo = &dii[0];
+    w[1] = w[0];
+    w[1].dstBinding = 1;
+    w[1].pImageInfo = &dii[1];
+    p_push_desc(s_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s_gamma_layout, 0, 2, w);
+    vkCmdDraw(s_cb, 3, 1, 0, 0);
+    end_rendering();
+    s_rt = NULL;
+    barrier_all();
+    s_gtmp.dirty = 1;
+    s_gtmp.gen++;
+    if ((s_frame % 600) == 0)
+        fprintf(stderr, "[GAMMA] draw issued\n");
+    return s_gtmp.image;
+}
+
 static int s_sc_dirty;
 void nv2a_vk_set_background(int bg) { s_ios_bg = bg; }
 int nfsu2_ios_background(void) { return s_ios_bg; }
@@ -2244,19 +2341,6 @@ static int create_swapchain(void)
     }
     s_sc_count = 8;
     vkGetSwapchainImagesKHR(s_dev, s_swapchain, &s_sc_count, s_sc_images);
-    for (uint32_t i = 0; i < s_sc_count; i++) {
-        if (s_sc_view[i])
-            vkDestroyImageView(s_dev, s_sc_view[i], NULL);
-        VkImageViewCreateInfo vci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-        vci.image = s_sc_images[i];
-        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        vci.format = s_sc_format;
-        vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        vci.subresourceRange.layerCount = 1;
-        vci.subresourceRange.levelCount = 1;
-        if (vkCreateImageView(s_dev, &vci, NULL, &s_sc_view[i]) != VK_SUCCESS)
-            s_sc_view[i] = VK_NULL_HANDLE;
-    }
     fprintf(stderr, "  [VK] swapchain %ux%u, %u images, format %d, present mode %d\n",
             s_sc_extent.width, s_sc_extent.height, s_sc_count, s_sc_format, mode);
     return 1;
@@ -3875,6 +3959,14 @@ static void vk_flip(void)
                 mb.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                 vkCmdPipelineBarrier(s_cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                                      0, 1, &mb, 0, NULL, 0, NULL);
+                VkImage bsrc = s->image;
+                if (gamma_lut_active()) {
+                    /* Offscreen LUT pass; falls back to the plain surface
+                     * on any failure (sticky broken flag). */
+                    VkImage t = gamma_pass(s);
+                    if (t)
+                        bsrc = t;
+                }
                 memset(&bl, 0, sizeof bl);
                 bl.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
                 bl.srcSubresource.layerCount = 1;
@@ -3887,103 +3979,7 @@ static void vk_flip(void)
                 bl.dstOffsets[1].x = dx + dw;
                 bl.dstOffsets[1].y = dy + dh;
                 bl.dstOffsets[1].z = 1;
-                if (gamma_lut_active()) {
-                    /* LUT present pass: a full-screen draw with the
-                     * letterbox as its viewport; the clear above already
-                     * made the bars black. Sampling the surface (GENERAL)
-                     * and writing the swapchain attachment. Falls back to
-                     * the plain blit if any piece failed to build. */
-                    gamma_ensure(s);
-                    gamma_upload_lut();
-                    if (s_gamma_pipe && s_lut_view && s_gamma_layout &&
-                        idx < 8 && s_sc_view[idx] != VK_NULL_HANDLE) {
-                        VkImageMemoryBarrier gb = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-                        gb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                        gb.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                        gb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-                        gb.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                        gb.image = dst;
-                        gb.subresourceRange = rg;
-                        vkCmdPipelineBarrier(s_cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
-                                             0, NULL, 0, NULL, 1, &gb);
-                        VkRenderingAttachmentInfo gca = {
-                            VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
-                        VkRenderingInfo gri = { VK_STRUCTURE_TYPE_RENDERING_INFO };
-                        gca.imageView = s_sc_view ? s_sc_view[idx] : VK_NULL_HANDLE;
-                        gca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                        gca.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-                        gca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                        gri.renderArea.offset.x = 0;
-                        gri.renderArea.offset.y = 0;
-                        gri.renderArea.extent.width = s_sc_extent.width;
-                        gri.renderArea.extent.height = s_sc_extent.height;
-                        gri.layerCount = 1;
-                        gri.colorAttachmentCount = 1;
-                        gri.pColorAttachments = &gca;
-                        p_begin_rendering(s_cb, &gri);
-                        VkViewport gv = { (float)dx, (float)dy, (float)dw, (float)dh, 0.0f, 1.0f };
-                        VkRect2D gs = { { dx, dy }, { (uint32_t)dw, (uint32_t)dh } };
-                        vkCmdSetViewport(s_cb, 0, 1, &gv);
-                        vkCmdSetScissor(s_cb, 0, 1, &gs);
-                        vkCmdBindPipeline(s_cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s_gamma_pipe);
-                        /* Push descriptors: 0 = surface, 1 = LUT, 2 = rect
-                         * UBO. Push constants crash MoltenVK's implicit
-                         * buffer binding (v17, device-proven) -- the rect
-                         * rides the ring like the game's own uniforms. */
-                        float rect[4] = { (float)dx, (float)dy,
-                                          1.0f / (float)dw, 1.0f / (float)dh };
-                        void *rmap;
-                        VkDeviceSize rat = ring_alloc(sizeof rect, s_ubo_align, &rmap);
-                        VkDescriptorBufferInfo dbi;
-                        VkDescriptorImageInfo dii[2];
-                        VkWriteDescriptorSet w[3];
-                        if (rmap) {
-                            memcpy(rmap, rect, sizeof rect);
-                            memset(dii, 0, sizeof dii);
-                            memset(w, 0, sizeof w);
-                            dii[0].sampler = s_surf_sampler;
-                            dii[0].imageView = s->view;
-                            dii[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-                            dii[1].sampler = s_lut_sampler;
-                            dii[1].imageView = s_lut_view;
-                            dii[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-                            dbi.buffer = s_f->ring;
-                            dbi.offset = rat;
-                            dbi.range = sizeof rect;
-                            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                            w[0].dstBinding = 0;
-                            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                            w[0].descriptorCount = 1;
-                            w[0].pImageInfo = &dii[0];
-                            w[1] = w[0];
-                            w[1].dstBinding = 1;
-                            w[1].pImageInfo = &dii[1];
-                            w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                            w[2].dstBinding = 2;
-                            w[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                            w[2].descriptorCount = 1;
-                            w[2].pBufferInfo = &dbi;
-                            /* stageFlags come from the layout's bindings. */
-                            p_push_desc(s_cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        s_gamma_layout ? s_gamma_layout : s_layout,
-                                        0, 3, w);
-                        }
-                        vkCmdDraw(s_cb, rmap ? 3 : 0, 1, 0, 0);
-                        end_rendering();
-                        gb.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                        gb.dstAccessMask = 0;
-                        gb.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                        gb.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-                        vkCmdPipelineBarrier(s_cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
-                                             0, NULL, 0, NULL, 1, &gb);
-                        have_image = 1;
-                        /* Skip the blit + its present barrier. */
-                        goto present_done;
-                    }
-                }
-                vkCmdBlitImage(s_cb, s->image, VK_IMAGE_LAYOUT_GENERAL, dst,
+                vkCmdBlitImage(s_cb, bsrc, VK_IMAGE_LAYOUT_GENERAL, dst,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
             }
             b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -3992,7 +3988,6 @@ static void vk_flip(void)
             b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
             vkCmdPipelineBarrier(s_cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
                                  VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &b);
-        present_done:;
         }
     }
     /* iOS: a backgrounded app may not submit GPU work at all. Park here
