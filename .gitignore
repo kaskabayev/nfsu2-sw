@@ -63,3 +63,11 @@ gen/
 
 # Per-game toolkit output (disassembly of the retail XBE)
 xboxrecomp/tools/*/output/
+build-linux/
+progcache.bin
+vkspirv.bin
+vkpipecache.bin
+xbox_kernel.log
+nfsu2_recomp
+*.o
+.hermes/
